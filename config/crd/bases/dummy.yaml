@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: dummy-config
+  namespace: default
+data:
+  info: "이 파일은 kustomize 빌드를 위한 더미 리소스입니다."

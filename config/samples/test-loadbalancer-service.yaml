@@ -1,0 +1,38 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: test-loadbalancer
+  namespace: default
+  annotations:
+    # 네이버 클라우드 관련 설정 (선택사항)
+    naver.k-paas.org/load-balancer-type: "NETWORK_PROXY"
+spec:
+  type: LoadBalancer
+  selector:
+    app: test-app
+  ports:
+    - name: http
+      port: 80
+      targetPort: 80
+      protocol: TCP
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: test-app
+  namespace: default
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: test-app
+  template:
+    metadata:
+      labels:
+        app: test-app
+    spec:
+      containers:
+      - name: nginx
+        image: nginx:1.21
+        ports:
+        - containerPort: 80

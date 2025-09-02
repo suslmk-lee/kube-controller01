@@ -5,13 +5,13 @@ metadata:
     control-plane: controller-manager
     app.kubernetes.io/name: kebe-controller01
     app.kubernetes.io/managed-by: kustomize
-  name: system
+  name: suslmk
 ---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: controller-manager
-  namespace: system
+  namespace: suslmk
   labels:
     control-plane: controller-manager
     app.kubernetes.io/name: kebe-controller01
@@ -93,6 +93,32 @@ spec:
             cpu: 10m
             memory: 64Mi
         volumeMounts: []
+        env:
+        - name: NAVER_CLOUD_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: naver-cloud-credentials
+              key: NAVER_CLOUD_API_KEY
+        - name: NAVER_CLOUD_API_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: naver-cloud-credentials
+              key: NAVER_CLOUD_API_SECRET
+        - name: NAVER_CLOUD_REGION
+          valueFrom:
+            secretKeyRef:
+              name: naver-cloud-credentials
+              key: NAVER_CLOUD_REGION
+        - name: NAVER_CLOUD_VPC_NO
+          valueFrom:
+            secretKeyRef:
+              name: naver-cloud-credentials
+              key: NAVER_CLOUD_VPC_NO
+        - name: NAVER_CLOUD_SUBNET_NO
+          valueFrom:
+            secretKeyRef:
+              name: naver-cloud-credentials
+              key: NAVER_CLOUD_SUBNET_NO
       volumes: []
       serviceAccountName: controller-manager
       terminationGracePeriodSeconds: 10

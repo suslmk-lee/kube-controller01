@@ -205,6 +205,8 @@ func main() {
 		APIKey:    os.Getenv("NAVER_CLOUD_API_KEY"),
 		APISecret: os.Getenv("NAVER_CLOUD_API_SECRET"),
 		Region:    os.Getenv("NAVER_CLOUD_REGION"),
+		VpcNo:     os.Getenv("NAVER_CLOUD_VPC_NO"),
+		SubnetNo:  os.Getenv("NAVER_CLOUD_SUBNET_NO"),
 	}
 
 	// 만약 Region이 설정되지 않았다면 기본값을 사용합니다

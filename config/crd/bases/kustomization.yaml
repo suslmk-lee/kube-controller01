@@ -1,0 +1,6 @@
+# 이 kustomization.yaml 파일은 CRD 기본 파일들을 관리합니다.
+# kubebuilder를 사용하여 생성된 CRD들이 여기에 저장됩니다.
+resources:
+- dummy.yaml
+# 아래 주석은 향후 실제 CRD가 생성되면 사용하세요
+# - core.k-paas.org_services.yaml

@@ -25,12 +25,12 @@ Naver Cloud API 인증 정보를 쿠버네티스 시크릿으로 생성합니다
 kubectl create namespace k-paas-system
 
 kubectl create secret generic naver-cloud-credentials \
-  --namespace k-paas-system \
-  --from-literal=NAVER_CLOUD_API_KEY="your-api-key" \
-  --from-literal=NAVER_CLOUD_API_SECRET="your-api-secret" \
+  --namespace suslmk \
+  --from-literal=NAVER_CLOUD_API_KEY="F4054E1B268386877BC3" \
+  --from-literal=NAVER_CLOUD_API_SECRET="41CE79571CD59F7B4A922B6A21786F24EAF4DE71" \
   --from-literal=NAVER_CLOUD_REGION="KR" \
-  --from-literal=NAVER_CLOUD_VPC_NO="your-vpc-no" \
-  --from-literal=NAVER_CLOUD_SUBNET_NO="your-subnet-no"
+  --from-literal=NAVER_CLOUD_VPC_NO="5123647" \
+  --from-literal=NAVER_CLOUD_SUBNET_NO="31400"
 ```
 
 ## 3. VPC 및 서브넷 정보 설정
