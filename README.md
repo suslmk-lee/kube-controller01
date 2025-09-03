@@ -79,6 +79,66 @@ kubectl get svc test-loadbalancer -w
 
 >**NOTE**: External IP가 할당되기까지 1-3분 정도 소요될 수 있습니다.
 
+## 디버깅 도구
+
+### 종합 디버깅 스크립트
+
+LoadBalancer 서비스의 전체 상태를 확인하는 종합 디버깅 도구:
+
+```sh
+./scripts/debug-loadbalancer.sh
+```
+
+**제공 정보:**
+- LoadBalancer 서비스 상태 및 External IP 할당 여부
+- 네이버 클라우드 리소스 정보 (로드밸런서 ID, 타겟 그룹 ID)
+- 네이버 클라우드 콘솔 직접 링크
+- 워커 노드 상태 및 인스턴스 매칭 정보
+- 환경 변수 설정 상태
+- 단계별 문제 해결 가이드
+
+### 타겟 그룹 전용 확인 스크립트
+
+타겟 그룹 상태만 집중적으로 확인하는 전용 도구:
+
+```sh
+./scripts/check-target-group-status.sh
+```
+
+**제공 정보:**
+- 타겟 그룹 등록 상태
+- 워커 노드와 인스턴스 매칭 상태
+- 컨트롤러 로그에서 타겟 관련 메시지 추출
+- 헬스체크 상태 분석
+
+### 문제 해결 단계
+
+1. **기본 설정 확인**
+   ```sh
+   # 환경 변수 설정
+   export NAVER_CLOUD_API_KEY=your_api_key
+   export NAVER_CLOUD_API_SECRET=your_api_secret
+   export NAVER_CLOUD_VPC_NO=your_vpc_no
+   export NAVER_CLOUD_SUBNET_NO=your_subnet_no
+   
+   # 컨트롤러 실행
+   make run
+   ```
+
+2. **종합 상태 확인**
+   ```sh
+   ./scripts/debug-loadbalancer.sh
+   ```
+
+3. **타겟 그룹 상세 확인**
+   ```sh
+   ./scripts/check-target-group-status.sh
+   ```
+
+4. **네이버 클라우드 콘솔 확인**
+   - 스크립트에서 제공하는 콘솔 링크를 통해 직접 확인
+   - 로드밸런서 상태 및 타겟 그룹 등록 상태 점검
+
 ### To Uninstall
 **Delete the instances (CRs) from the cluster:**
 

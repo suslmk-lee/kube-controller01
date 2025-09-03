@@ -1045,35 +1045,8 @@ func (r *ServiceReconciler) addNodesToTargetGroup(ctx context.Context, client *v
 		return fmt.Errorf("등록할 유효한 타겟이 없음")
 	}
 
-	// 모든 타겟을 한 번에 추가
-	if len(targets) > 0 {
-		addReq := vloadbalancer.AddTargetRequest{
-			RegionCode:    ncloud.String(r.NaverCloudConfig.Region),
-			TargetGroupNo: ncloud.String(targetGroupID),
-			TargetNoList:  make([]*string, len(targets)),
-		}
-
-		// 타겟 목록 설정
-		for i, instanceNo := range targets {
-			addReq.TargetNoList[i] = ncloud.String(instanceNo)
-		}
-
-		_, err := client.V2Api.AddTarget(&addReq)
-		if err != nil {
-			logger.Error(err, "타겟 추가 실패",
-				"targetGroupID", targetGroupID,
-				"targetCount", len(targets),
-				"port", nodePort)
-			return fmt.Errorf("타겟 추가 실패: %w", err)
-		}
-
-		logger.Info("타겟 추가 성공",
-			"targetGroupID", targetGroupID,
-			"targetCount", len(targets),
-			"port", nodePort)
-	}
-
-	return nil
+	// 재시도 메커니즘을 통한 타겟 추가
+	return r.addTargetsWithRetry(ctx, client, targetGroupID, targets, nodePort)
 }
 
 // isMasterNode는 노드가 마스터 노드인지 확인합니다
@@ -1135,8 +1108,11 @@ func (r *ServiceReconciler) getNaverCloudInstanceNo(node *corev1.Node) string {
 }
 
 // getNaverCloudInstanceNoByIP는 내부 IP를 통해 네이버 클라우드 인스턴스 번호를 찾습니다
+// NetworkInterface API를 활용하여 정확한 IP-인스턴스 매칭을 수행합니다
 func (r *ServiceReconciler) getNaverCloudInstanceNoByIP(ctx context.Context, nodeIP string) (string, error) {
 	logger := log.FromContext(ctx)
+
+	logger.Info("NetworkInterface API를 통한 인스턴스 검색 시작", "nodeIP", nodeIP)
 
 	// Naver Cloud API 접근을 위한 인증 정보 설정
 	apiKeys := &ncloud.APIKey{
@@ -1144,7 +1120,107 @@ func (r *ServiceReconciler) getNaverCloudInstanceNoByIP(ctx context.Context, nod
 		SecretKey: r.NaverCloudConfig.APISecret,
 	}
 
-	// Naver Cloud VServer API 클라이언트 생성 (VM 인스턴스 조회용)
+	// 1. VServer API 클라이언트 생성 (NetworkInterface 조회용)
+	vserverConfig := vserver.NewConfiguration(apiKeys)
+	vserverConfig.BasePath = "https://ncloud.apigw.gov-ntruss.com/vserver/v2"
+	vserverClient := vserver.NewAPIClient(vserverConfig)
+
+	// 2. NetworkInterface 목록 조회 (VPC 환경의 모든 NetworkInterface)
+	niListReq := vserver.GetNetworkInterfaceListRequest{
+		RegionCode: ncloud.String(r.NaverCloudConfig.Region),
+	}
+
+	niListResp, err := vserverClient.V2Api.GetNetworkInterfaceList(&niListReq)
+	if err != nil {
+		logger.Error(err, "NetworkInterface 목록 조회 실패")
+		// NetworkInterface API 실패 시 fallback으로 VServer API 사용
+		return r.getInstanceNoByServerListFallback(ctx, nodeIP)
+	}
+
+	if niListResp == nil || len(niListResp.NetworkInterfaceList) == 0 {
+		logger.Info("NetworkInterface 목록이 비어있음, fallback 사용")
+		return r.getInstanceNoByServerListFallback(ctx, nodeIP)
+	}
+
+	// 3. NetworkInterface에서 IP 매칭하여 인스턴스 번호 찾기
+	for _, ni := range niListResp.NetworkInterfaceList {
+		if ni == nil {
+			continue
+		}
+
+		// NetworkInterface의 IP 주소 확인
+		var niIP string
+		if ni.Ip != nil {
+			niIP = *ni.Ip
+		}
+
+		if niIP == nodeIP {
+			// IP가 일치하는 NetworkInterface 발견
+			var instanceNo string
+			if ni.InstanceNo != nil {
+				instanceNo = *ni.InstanceNo
+			}
+
+			if instanceNo != "" {
+				logger.Info("NetworkInterface API로 인스턴스 번호 찾음",
+					"nodeIP", nodeIP,
+					"instanceNo", instanceNo,
+					"networkInterfaceNo", func() string {
+						if ni.NetworkInterfaceNo != nil {
+							return *ni.NetworkInterfaceNo
+						}
+						return "unknown"
+					}(),
+					"networkInterfaceName", func() string {
+						if ni.NetworkInterfaceName != nil {
+							return *ni.NetworkInterfaceName
+						}
+						return "unknown"
+					}())
+				return instanceNo, nil
+			}
+		}
+
+		// 디버깅을 위한 NetworkInterface 정보 로깅
+		logger.Info("NetworkInterface 정보",
+			"networkInterfaceNo", func() string {
+				if ni.NetworkInterfaceNo != nil {
+					return *ni.NetworkInterfaceNo
+				}
+				return "nil"
+			}(),
+			"ip", niIP,
+			"instanceNo", func() string {
+				if ni.InstanceNo != nil {
+					return *ni.InstanceNo
+				}
+				return "nil"
+			}(),
+			"status", func() string {
+				if ni.NetworkInterfaceStatus != nil && ni.NetworkInterfaceStatus.Code != nil {
+					return *ni.NetworkInterfaceStatus.Code
+				}
+				return "unknown"
+			}())
+	}
+
+	logger.Info("NetworkInterface API에서 일치하는 IP를 찾지 못함, fallback 사용", "nodeIP", nodeIP)
+	return r.getInstanceNoByServerListFallback(ctx, nodeIP)
+}
+
+// getInstanceNoByServerListFallback은 NetworkInterface API 실패 시 VServer API를 사용하는 fallback 함수입니다
+func (r *ServiceReconciler) getInstanceNoByServerListFallback(ctx context.Context, nodeIP string) (string, error) {
+	logger := log.FromContext(ctx)
+
+	logger.Info("VServer API fallback 사용", "nodeIP", nodeIP)
+
+	// Naver Cloud API 접근을 위한 인증 정보 설정
+	apiKeys := &ncloud.APIKey{
+		AccessKey: r.NaverCloudConfig.APIKey,
+		SecretKey: r.NaverCloudConfig.APISecret,
+	}
+
+	// VServer API 클라이언트 생성
 	config := vserver.NewConfiguration(apiKeys)
 	config.BasePath = "https://ncloud.apigw.gov-ntruss.com/vserver/v2"
 	client := vserver.NewAPIClient(config)
@@ -1164,58 +1240,462 @@ func (r *ServiceReconciler) getNaverCloudInstanceNoByIP(ctx context.Context, nod
 		return "", fmt.Errorf("서버 인스턴스를 찾을 수 없음")
 	}
 
-	// 내부 IP가 일치하는 서버 찾기
-	// 네이버 클라우드 VServer API는 직접적으로 IP를 제공하지 않으므로
-	// 별도의 NetworkInterface API를 사용해야 하지만,
-	// 여기서는 서버 이름 패턴으로 매칭을 시도합니다
+	// 각 서버 인스턴스에 대해 NetworkInterface 상세 조회 시도
 	for _, server := range listResp.ServerInstanceList {
-		// 서버 이름이 노드 이름과 일치하는지 확인
-		if server.ServerName != nil {
-			serverName := *server.ServerName
-			// 서버 이름에서 노드 이름을 찾을 수 있는 패턴 확인
-			for _, pattern := range []string{
-				serverName,                               // 정확한 일치
-				strings.Replace(serverName, "-", "", -1), // 하이픈 제거 후 확인
-			} {
-				if strings.Contains(nodeIP, "192.168.14.11") && strings.Contains(pattern, "work-001") {
-					logger.Info("이름 패턴으로 인스턴스 번호 찾음",
-						"nodeIP", nodeIP,
-						"instanceNo", *server.ServerInstanceNo,
-						"serverName", serverName,
-						"pattern", "work-001")
-					return *server.ServerInstanceNo, nil
-				}
-				if strings.Contains(nodeIP, "192.168.14.12") && strings.Contains(pattern, "work-002") {
-					logger.Info("이름 패턴으로 인스턴스 번호 찾음",
-						"nodeIP", nodeIP,
-						"instanceNo", *server.ServerInstanceNo,
-						"serverName", serverName,
-						"pattern", "work-002")
-					return *server.ServerInstanceNo, nil
-				}
-			}
+		if server.ServerInstanceNo == nil {
+			continue
 		}
 
-		logger.Info("서버 인스턴스 정보",
-			"serverName", func() string {
-				if server.ServerName != nil {
-					return *server.ServerName
-				}
-				return "nil"
-			}(),
-			"instanceNo", func() string {
-				if server.ServerInstanceNo != nil {
-					return *server.ServerInstanceNo
-				}
-				return "nil"
-			}(),
-			"vpcNo", func() string {
-				if server.VpcNo != nil {
-					return *server.VpcNo
-				}
-				return "nil"
-			}())
+		instanceNo := *server.ServerInstanceNo
+		serverName := "unknown"
+		if server.ServerName != nil {
+			serverName = *server.ServerName
+		}
+
+		// 해당 인스턴스의 NetworkInterface 상세 조회
+		if found, err := r.checkInstanceNetworkInterface(ctx, instanceNo, nodeIP); err == nil && found {
+			logger.Info("VServer fallback으로 인스턴스 번호 찾음",
+				"nodeIP", nodeIP,
+				"instanceNo", instanceNo,
+				"serverName", serverName)
+			return instanceNo, nil
+		}
+
+		logger.Info("서버 인스턴스 확인",
+			"serverName", serverName,
+			"instanceNo", instanceNo,
+			"nodeIP", nodeIP)
 	}
 
 	return "", fmt.Errorf("IP %s에 해당하는 서버 인스턴스를 찾을 수 없음", nodeIP)
+}
+
+// checkInstanceNetworkInterface는 특정 인스턴스의 NetworkInterface에서 IP를 확인합니다
+func (r *ServiceReconciler) checkInstanceNetworkInterface(ctx context.Context, instanceNo, targetIP string) (bool, error) {
+	logger := log.FromContext(ctx)
+
+	// Naver Cloud API 접근을 위한 인증 정보 설정
+	apiKeys := &ncloud.APIKey{
+		AccessKey: r.NaverCloudConfig.APIKey,
+		SecretKey: r.NaverCloudConfig.APISecret,
+	}
+
+	// VServer API 클라이언트 생성
+	vserverConfig := vserver.NewConfiguration(apiKeys)
+	vserverConfig.BasePath = "https://ncloud.apigw.gov-ntruss.com/vserver/v2"
+	vserverClient := vserver.NewAPIClient(vserverConfig)
+
+	// 특정 인스턴스의 NetworkInterface 조회
+	niListReq := vserver.GetNetworkInterfaceListRequest{
+		RegionCode: ncloud.String(r.NaverCloudConfig.Region),
+		InstanceNo: ncloud.String(instanceNo),
+	}
+
+	niListResp, err := vserverClient.V2Api.GetNetworkInterfaceList(&niListReq)
+	if err != nil {
+		logger.Info("인스턴스별 NetworkInterface 조회 실패", "instanceNo", instanceNo, "error", err.Error())
+		return false, err
+	}
+
+	if niListResp == nil || len(niListResp.NetworkInterfaceList) == 0 {
+		return false, nil
+	}
+
+	// NetworkInterface에서 IP 확인
+	for _, ni := range niListResp.NetworkInterfaceList {
+		if ni == nil {
+			continue
+		}
+
+		var niIP string
+		if ni.Ip != nil {
+			niIP = *ni.Ip
+		}
+
+		if niIP == targetIP {
+			logger.Info("인스턴스별 NetworkInterface에서 IP 매칭 성공",
+				"instanceNo", instanceNo,
+				"targetIP", targetIP,
+				"foundIP", niIP)
+			return true, nil
+		}
+	}
+
+	return false, nil
+}
+
+// checkTargetGroupStatus는 타겟 그룹의 상태를 확인하고 디버깅 정보를 제공합니다
+func (r *ServiceReconciler) checkTargetGroupStatus(ctx context.Context, client *vloadbalancer.APIClient, targetGroupID string) error {
+	logger := log.FromContext(ctx)
+
+	// 타겟 그룹 상세 정보 조회
+	detailReq := vloadbalancer.GetTargetGroupDetailRequest{
+		RegionCode:    ncloud.String(r.NaverCloudConfig.Region),
+		TargetGroupNo: ncloud.String(targetGroupID),
+	}
+
+	detailResp, err := client.V2Api.GetTargetGroupDetail(&detailReq)
+	if err != nil {
+		return fmt.Errorf("타겟 그룹 상세 정보 조회 실패: %w", err)
+	}
+
+	if detailResp == nil || len(detailResp.TargetGroupList) == 0 {
+		return fmt.Errorf("타겟 그룹 정보를 찾을 수 없음: %s", targetGroupID)
+	}
+
+	targetGroup := detailResp.TargetGroupList[0]
+
+	// 타겟 그룹 기본 정보 로깅
+	logger.Info("타겟 그룹 상태 확인",
+		"targetGroupID", targetGroupID,
+		"targetGroupName", func() string {
+			if targetGroup.TargetGroupName != nil {
+				return *targetGroup.TargetGroupName
+			}
+			return "unknown"
+		}(),
+		"targetType", func() string {
+			if targetGroup.TargetType != nil && targetGroup.TargetType.Code != nil {
+				return *targetGroup.TargetType.Code
+			}
+			return "unknown"
+		}(),
+		"port", func() int32 {
+			if targetGroup.TargetGroupPort != nil {
+				return *targetGroup.TargetGroupPort
+			}
+			return 0
+		}(),
+		"protocol", func() string {
+			if targetGroup.TargetGroupProtocolType != nil && targetGroup.TargetGroupProtocolType.Code != nil {
+				return *targetGroup.TargetGroupProtocolType.Code
+			}
+			return "unknown"
+		}())
+
+	// 헬스체크 설정 정보 로깅
+	logger.Info("타겟 그룹 헬스체크 설정",
+		"targetGroupID", targetGroupID,
+		"healthCheckProtocol", func() string {
+			if targetGroup.HealthCheckProtocolType != nil && targetGroup.HealthCheckProtocolType.Code != nil {
+				return *targetGroup.HealthCheckProtocolType.Code
+			}
+			return "unknown"
+		}(),
+		"healthCheckPort", func() int32 {
+			if targetGroup.HealthCheckPort != nil {
+				return *targetGroup.HealthCheckPort
+			}
+			return 0
+		}(),
+		"healthCheckPath", func() string {
+			if targetGroup.HealthCheckHttpMethodType != nil && targetGroup.HealthCheckHttpMethodType.Code != nil {
+				return *targetGroup.HealthCheckHttpMethodType.Code
+			}
+			return "unknown"
+		}())
+
+	// 등록된 타겟 목록 조회
+	targetListReq := vloadbalancer.GetTargetListRequest{
+		RegionCode:    ncloud.String(r.NaverCloudConfig.Region),
+		TargetGroupNo: ncloud.String(targetGroupID),
+	}
+
+	targetListResp, err := client.V2Api.GetTargetList(&targetListReq)
+	if err != nil {
+		logger.Error(err, "타겟 목록 조회 실패", "targetGroupID", targetGroupID)
+		return fmt.Errorf("타겟 목록 조회 실패: %w", err)
+	}
+
+	if targetListResp == nil {
+		logger.Info("타겟 목록 응답이 없음", "targetGroupID", targetGroupID)
+		return nil
+	}
+
+	// 등록된 타겟 수 확인
+	targetCount := len(targetListResp.TargetList)
+	logger.Info("타겟 그룹 등록 상태",
+		"targetGroupID", targetGroupID,
+		"registeredTargetCount", targetCount)
+
+	if targetCount == 0 {
+		logger.Info("타겟 그룹에 등록된 타겟이 없음",
+			"targetGroupID", targetGroupID,
+			"reason", "워커 노드 인스턴스 번호를 찾지 못했거나 타겟 등록에 실패했을 가능성",
+			"level", "WARNING")
+		return fmt.Errorf("타겟 그룹에 등록된 타겟이 없음")
+	}
+
+	// 각 타겟의 상세 상태 확인
+	for i, target := range targetListResp.TargetList {
+		if target == nil {
+			continue
+		}
+
+		logger.Info("등록된 타겟 상세 정보",
+			"targetGroupID", targetGroupID,
+			"targetIndex", i,
+			"targetNo", func() string {
+				if target.TargetNo != nil {
+					return *target.TargetNo
+				}
+				return "unknown"
+			}(),
+
+			"healthCheckStatus", func() string {
+				if target.HealthCheckStatus != nil && target.HealthCheckStatus.Code != nil {
+					return *target.HealthCheckStatus.Code
+				}
+				return "unknown"
+			}(),
+			"healthCheckStatusName", func() string {
+				if target.HealthCheckStatus != nil && target.HealthCheckStatus.CodeName != nil {
+					return *target.HealthCheckStatus.CodeName
+				}
+				return "unknown"
+			}())
+
+		// 헬스체크 실패 시 상세 정보 제공
+		if target.HealthCheckStatus != nil && target.HealthCheckStatus.Code != nil {
+			healthStatus := *target.HealthCheckStatus.Code
+			if healthStatus != "HEALTHY" && healthStatus != "UP" {
+				logger.Info("타겟 헬스체크 실패",
+					"targetGroupID", targetGroupID,
+					"targetNo", func() string {
+						if target.TargetNo != nil {
+							return *target.TargetNo
+						}
+						return "unknown"
+					}(),
+					"healthStatus", healthStatus,
+					"level", "WARNING",
+					"possibleCause1", "타겟 인스턴스가 실행되지 않음",
+					"possibleCause2", "헬스체크 포트가 열려있지 않음",
+					"possibleCause3", "방화벽 또는 보안 그룹 설정 문제",
+					"possibleCause4", "애플리케이션이 헬스체크 경로에 응답하지 않음")
+			}
+		}
+	}
+
+	// 요약 정보 제공
+	healthyTargets := 0
+	for _, target := range targetListResp.TargetList {
+		if target != nil && target.HealthCheckStatus != nil && target.HealthCheckStatus.Code != nil {
+			status := *target.HealthCheckStatus.Code
+			if status == "HEALTHY" || status == "UP" {
+				healthyTargets++
+			}
+		}
+	}
+
+	logger.Info("타겟 그룹 상태 요약",
+		"targetGroupID", targetGroupID,
+		"totalTargets", targetCount,
+		"healthyTargets", healthyTargets,
+		"unhealthyTargets", targetCount-healthyTargets,
+		"status", func() string {
+			if healthyTargets == 0 {
+				return "CRITICAL - 모든 타겟이 비정상"
+			} else if healthyTargets < targetCount {
+				return "WARNING - 일부 타겟이 비정상"
+			} else {
+				return "OK - 모든 타겟이 정상"
+			}
+		}())
+
+	// 문제 해결 가이드 제공
+	if healthyTargets == 0 {
+		logger.Info("문제 해결 가이드",
+			"targetGroupID", targetGroupID,
+			"step1", "워커 노드가 실행 중인지 확인: kubectl get nodes",
+			"step2", "NodePort 서비스가 정상 동작하는지 확인: kubectl get svc",
+			"step3", "워커 노드에서 애플리케이션 포트가 열려있는지 확인",
+			"step4", "네이버 클라우드 콘솔에서 보안 그룹 설정 확인",
+			"step5", "헬스체크 설정이 올바른지 확인")
+	}
+
+	return nil
+}
+
+// addTargetsWithRetry는 재시도 메커니즘을 통해 타겟을 타겟 그룹에 추가합니다
+func (r *ServiceReconciler) addTargetsWithRetry(ctx context.Context, client *vloadbalancer.APIClient, targetGroupID string, targets []string, nodePort int32) error {
+	logger := log.FromContext(ctx)
+
+	if len(targets) == 0 {
+		logger.Info("추가할 타겟이 없음", "targetGroupID", targetGroupID)
+		return nil
+	}
+
+	logger.Info("재시도 메커니즘을 통한 타겟 추가 시작",
+		"targetGroupID", targetGroupID,
+		"targetCount", len(targets),
+		"maxRetries", 3)
+
+	// 재시도할 타겟 목록 (초기에는 모든 타겟)
+	remainingTargets := make([]string, len(targets))
+	copy(remainingTargets, targets)
+
+	var lastErr error
+
+	// 최대 3회 재시도 (기존 External IP 패턴과 일관성 유지)
+	for retry := 0; retry < 3; retry++ {
+		if len(remainingTargets) == 0 {
+			logger.Info("모든 타겟이 성공적으로 추가됨", "targetGroupID", targetGroupID)
+			break
+		}
+
+		logger.Info("타겟 추가 시도",
+			"targetGroupID", targetGroupID,
+			"retry", retry+1,
+			"remainingTargets", len(remainingTargets),
+			"totalTargets", len(targets))
+
+		// 타겟 추가 요청 구성
+		addReq := vloadbalancer.AddTargetRequest{
+			RegionCode:    ncloud.String(r.NaverCloudConfig.Region),
+			TargetGroupNo: ncloud.String(targetGroupID),
+			TargetNoList:  make([]*string, len(remainingTargets)),
+		}
+
+		// 남은 타겟 목록 설정
+		for i, instanceNo := range remainingTargets {
+			addReq.TargetNoList[i] = ncloud.String(instanceNo)
+		}
+
+		// 타겟 추가 API 호출
+		_, err := client.V2Api.AddTarget(&addReq)
+		if err != nil {
+			lastErr = err
+			logger.Info("타겟 추가 실패, 재시도 예정",
+				"targetGroupID", targetGroupID,
+				"retry", retry+1,
+				"error", err.Error(),
+				"remainingTargets", len(remainingTargets))
+
+			// 재시도 간 대기 시간 (기존 패턴과 일관성: 10초 + retry*5초)
+			if retry < 2 { // 마지막 재시도가 아닌 경우에만 대기
+				waitTime := time.Duration(10+retry*5) * time.Second
+				logger.Info("재시도 대기",
+					"targetGroupID", targetGroupID,
+					"waitSeconds", waitTime.Seconds(),
+					"nextRetry", retry+2)
+				time.Sleep(waitTime)
+			}
+			continue
+		}
+
+		// 타겟 추가 성공
+		logger.Info("타겟 추가 성공",
+			"targetGroupID", targetGroupID,
+			"retry", retry+1,
+			"addedTargets", len(remainingTargets))
+
+		// 타겟 추가 후 상태 확인하여 실제로 등록되었는지 검증
+		successfulTargets, failedTargets, err := r.verifyTargetRegistration(ctx, client, targetGroupID, remainingTargets)
+		if err != nil {
+			logger.Error(err, "타겟 등록 검증 실패", "targetGroupID", targetGroupID)
+			// 검증 실패 시에도 다음 재시도 진행
+		} else {
+			logger.Info("타겟 등록 검증 완료",
+				"targetGroupID", targetGroupID,
+				"successfulTargets", len(successfulTargets),
+				"failedTargets", len(failedTargets))
+
+			// 실패한 타겟만 다음 재시도에서 처리
+			remainingTargets = failedTargets
+		}
+
+		// 모든 타겟이 성공적으로 등록된 경우
+		if len(remainingTargets) == 0 {
+			logger.Info("모든 타겟 등록 완료",
+				"targetGroupID", targetGroupID,
+				"totalTargets", len(targets),
+				"finalRetry", retry+1)
+			break
+		}
+	}
+
+	// 최종 결과 확인
+	if len(remainingTargets) > 0 {
+		logger.Error(lastErr, "타겟 추가 최종 실패",
+			"targetGroupID", targetGroupID,
+			"failedTargets", len(remainingTargets),
+			"totalTargets", len(targets),
+			"successfulTargets", len(targets)-len(remainingTargets))
+
+		// 부분 성공인 경우 경고로 처리
+		if len(remainingTargets) < len(targets) {
+			logger.Info("부분 성공 - 일부 타겟만 등록됨",
+				"targetGroupID", targetGroupID,
+				"successfulTargets", len(targets)-len(remainingTargets),
+				"failedTargets", len(remainingTargets),
+				"level", "WARNING")
+			// 부분 성공은 에러로 처리하지 않음
+		} else {
+			// 완전 실패인 경우에만 에러 반환
+			return fmt.Errorf("모든 타겟 추가 실패 (재시도 3회 완료): %w", lastErr)
+		}
+	}
+
+	// 최종 타겟 그룹 상태 확인
+	if err := r.checkTargetGroupStatus(ctx, client, targetGroupID); err != nil {
+		logger.Error(err, "최종 타겟 그룹 상태 확인 실패", "targetGroupID", targetGroupID)
+		// 상태 확인 실패는 전체 프로세스를 중단하지 않음
+	}
+
+	logger.Info("타겟 추가 프로세스 완료",
+		"targetGroupID", targetGroupID,
+		"totalTargets", len(targets),
+		"finalSuccessfulTargets", len(targets)-len(remainingTargets))
+
+	return nil
+}
+
+// verifyTargetRegistration은 타겟이 실제로 타겟 그룹에 등록되었는지 검증합니다
+func (r *ServiceReconciler) verifyTargetRegistration(ctx context.Context, client *vloadbalancer.APIClient, targetGroupID string, expectedTargets []string) ([]string, []string, error) {
+	logger := log.FromContext(ctx)
+
+	// 타겟 목록 조회
+	targetListReq := vloadbalancer.GetTargetListRequest{
+		RegionCode:    ncloud.String(r.NaverCloudConfig.Region),
+		TargetGroupNo: ncloud.String(targetGroupID),
+	}
+
+	targetListResp, err := client.V2Api.GetTargetList(&targetListReq)
+	if err != nil {
+		return nil, expectedTargets, fmt.Errorf("타겟 목록 조회 실패: %w", err)
+	}
+
+	if targetListResp == nil {
+		return nil, expectedTargets, fmt.Errorf("타겟 목록 응답이 없음")
+	}
+
+	// 등록된 타겟 목록 생성
+	registeredTargets := make(map[string]bool)
+	for _, target := range targetListResp.TargetList {
+		if target != nil && target.TargetNo != nil {
+			registeredTargets[*target.TargetNo] = true
+		}
+	}
+
+	// 성공/실패 타겟 분류
+	var successfulTargets []string
+	var failedTargets []string
+
+	for _, expectedTarget := range expectedTargets {
+		if registeredTargets[expectedTarget] {
+			successfulTargets = append(successfulTargets, expectedTarget)
+			logger.Info("타겟 등록 확인됨",
+				"targetGroupID", targetGroupID,
+				"targetNo", expectedTarget)
+		} else {
+			failedTargets = append(failedTargets, expectedTarget)
+			logger.Info("타겟 등록 실패 확인됨",
+				"targetGroupID", targetGroupID,
+				"targetNo", expectedTarget,
+				"level", "WARNING")
+		}
+	}
+
+	return successfulTargets, failedTargets, nil
 }
