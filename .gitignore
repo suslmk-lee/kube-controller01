@@ -13,6 +13,11 @@ Dockerfile.cross
 # Output of the go coverage tool, specifically when used with LiteIDE
 *.out
 
+# Coverage reports
+cover.out
+cover_filtered.out
+coverage_filtered.html
+
 # Go workspace file
 go.work
 
@@ -29,3 +34,13 @@ go.work
 CLAUDE.md
 README02.md
 scripts
+
+# YoYo AI version control directory
+.yoyo/
+.kiro/
+.devcontainer/
+*COVERAGE_*.md
+debugging-analysis.md
+test-*.yaml
+test-*.md
+test.yaml
