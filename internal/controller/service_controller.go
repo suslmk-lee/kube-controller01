@@ -34,6 +34,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	"github.com/go-logr/logr"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 )
@@ -44,6 +45,8 @@ type ServiceReconciler struct {
 	Scheme *runtime.Scheme
 	// Naver Cloud API 클라이언트 설정
 	NaverCloudConfig NaverCloudConfig
+	// Naver Cloud 클라이언트 인터페이스 (테스트를 위한 의존성 주입)
+	NaverClient NaverCloudClient
 }
 
 // NaverCloudConfig 구조체는 Naver Cloud API 접근을 위한 설정을 담고 있습니다
@@ -89,7 +92,59 @@ func (r *ServiceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 
 	// 서비스가 LoadBalancer 타입인지 확인
 	if service.Spec.Type != corev1.ServiceTypeLoadBalancer {
-		logger.Info("LoadBalancer 타입이 아닌 서비스 무시")
+		// LoadBalancer 타입이 아니지만 이전에 LoadBalancer였던 경우 정리 필요
+		lbID, lbExists := service.Annotations["naver.k-paas.org/lb-id"]
+		targetGroups, targetGroupsExists := service.Annotations["naver.k-paas.org/target-groups"]
+		if (lbExists && lbID != "") || (targetGroupsExists && targetGroups != "") {
+			logger.Info("서비스 타입이 변경됨, 기존 LoadBalancer 정리 시작",
+				"service-type", service.Spec.Type,
+				"previous-lb-id", lbID,
+				"target-groups", targetGroups)
+
+			// 기존 LoadBalancer 삭제
+			if err := r.deleteNaverCloudLB(ctx, &service); err != nil {
+				logger.Error(err, "기존 LoadBalancer 삭제 실패")
+				return ctrl.Result{RequeueAfter: 30 * time.Second}, err
+			}
+
+			// 최신 서비스 객체 다시 가져오기 (동시성 문제 방지)
+			var latestService corev1.Service
+			if err := r.Get(ctx, types.NamespacedName{Namespace: service.Namespace, Name: service.Name}, &latestService); err != nil {
+				logger.Error(err, "최신 서비스 객체 가져오기 실패")
+				return ctrl.Result{RequeueAfter: 5 * time.Second}, err
+			}
+
+			// LoadBalancer 관련 어노테이션 제거
+			if latestService.Annotations == nil {
+				latestService.Annotations = make(map[string]string)
+			}
+			delete(latestService.Annotations, "naver.k-paas.org/lb-id")
+			delete(latestService.Annotations, "naver.k-paas.org/target-groups")
+
+			// Finalizer 제거
+			naverLBFinalizer := "naver.k-paas.org/lb-finalizer"
+			latestService.Finalizers = removeString(latestService.Finalizers, naverLBFinalizer)
+
+			// 서비스 상태에서 LoadBalancer 정보 제거
+			latestService.Status.LoadBalancer = corev1.LoadBalancerStatus{}
+
+			// 변경사항 저장
+			if err := r.Update(ctx, &latestService); err != nil {
+				logger.Error(err, "서비스 어노테이션 업데이트 실패")
+				return ctrl.Result{RequeueAfter: 5 * time.Second}, err
+			}
+			if err := r.Status().Update(ctx, &latestService); err != nil {
+				logger.Error(err, "서비스 상태 업데이트 실패")
+				return ctrl.Result{RequeueAfter: 5 * time.Second}, err
+			}
+
+			logger.Info("기존 LoadBalancer 정리 완료",
+				"service-type", latestService.Spec.Type,
+				"removed-lb-id", lbID,
+				"removed-target-groups", targetGroups)
+		} else {
+			logger.Info("LoadBalancer 관련 리소스가 없는 서비스", "service-type", service.Spec.Type)
+		}
 		return ctrl.Result{}, nil
 	}
 
@@ -480,42 +535,11 @@ func (r *ServiceReconciler) reconcileNaverCloudLB(ctx context.Context, service *
 		}
 
 		if len(targetGroupIDs) > 0 {
-			// 리스너 추가 (기존에 없는 것만)
-			for i, port := range service.Spec.Ports {
-				if i >= len(targetGroupIDs) {
-					continue
-				}
-
-				// 이미 해당 포트의 리스너가 있는지 확인
-				if existingListeners[port.Port] {
-					logger.Info("기존 리스너 재사용", "port", port.Port)
-					continue
-				}
-
-				// 리스너는 일반 TCP 프로토콜 사용 (타겟 그룹은 PROXY_TCP이지만 리스너는 TCP)
-				protocolType := "TCP"
-				if port.Protocol == "UDP" {
-					protocolType = "UDP"
-				}
-
-				logger.Info("리스너 생성 요청", "port", port.Port, "protocol", protocolType, "targetGroupID", targetGroupIDs[i])
-
-				listenerReq := vloadbalancer.CreateLoadBalancerListenerRequest{
-					RegionCode:             ncloud.String(r.NaverCloudConfig.Region),
-					LoadBalancerInstanceNo: &lbID,
-					ProtocolTypeCode:       ncloud.String(protocolType), // 리스너는 일반 TCP/UDP 사용
-					Port:                   ncloud.Int32(int32(port.Port)),
-					TargetGroupNo:          &targetGroupIDs[i],
-				}
-
-				// 리스너 생성 API 호출
-				_, err = client.V2Api.CreateLoadBalancerListener(&listenerReq)
-				if err != nil {
-					logger.Error(err, "리스너 생성 실패", "port", port.Port)
-					continue
-				}
-
-				logger.Info("리스너 생성 성공", "port", port.Port, "targetGroupID", targetGroupIDs[i])
+			// 순차적 리스너 생성 (안정성을 위해 각 리스너 생성 후 대기)
+			err = r.createListenersSequentially(ctx, client, lbID, service.Spec.Ports, targetGroupIDs, existingListeners, logger)
+			if err != nil {
+				logger.Error(err, "리스너 순차 생성 실패")
+				// 일부 리스너 실패해도 LoadBalancer 자체는 사용 가능하므로 계속 진행
 			}
 		}
 
@@ -815,31 +839,67 @@ func (r *ServiceReconciler) deleteNaverCloudLB(ctx context.Context, service *cor
 		}
 
 		logger.Info("Naver Cloud LB 삭제 성공", "lb-id", lbID)
+
+		// 로드밸런서 삭제 후 리스너가 완전히 정리될 때까지 대기
+		logger.Info("로드밸런서 삭제 후 리스너 정리 대기", "lb-id", lbID, "wait-seconds", 30)
+		time.Sleep(30 * time.Second)
 	}
 
-	// 2. 타겟 그룹 삭제
+	// 2. 타겟 그룹 삭제 (재시도 로직 포함)
 	if tgExists && targetGroupsStr != "" {
 		targetGroupIDs := strings.Split(targetGroupsStr, ",")
+		logger.Info("타겟 그룹 삭제 시작", "target-group-count", len(targetGroupIDs))
 
 		for _, tgID := range targetGroupIDs {
 			if tgID == "" {
 				continue
 			}
 
-			tgReq := vloadbalancer.DeleteTargetGroupsRequest{
-				RegionCode:        ncloud.String(r.NaverCloudConfig.Region),
-				TargetGroupNoList: []*string{ncloud.String(tgID)},
+			// 타겟 그룹 삭제 재시도 (최대 5회)
+			deleted := false
+			for retry := 1; retry <= 5; retry++ {
+				tgReq := vloadbalancer.DeleteTargetGroupsRequest{
+					RegionCode:        ncloud.String(r.NaverCloudConfig.Region),
+					TargetGroupNoList: []*string{ncloud.String(tgID)},
+				}
+
+				_, err := client.V2Api.DeleteTargetGroups(&tgReq)
+				if err != nil {
+					if strings.Contains(err.Error(), "1200059") || strings.Contains(err.Error(), "Target group in use") {
+						logger.Info("타겟 그룹이 아직 사용 중, 재시도 예정",
+							"target-group-id", tgID,
+							"retry", retry,
+							"max-retries", 5,
+							"wait-seconds", 10)
+
+						if retry < 5 {
+							time.Sleep(10 * time.Second)
+							continue
+						}
+					}
+
+					logger.Error(err, "타겟 그룹 삭제 최종 실패",
+						"target-group-id", tgID,
+						"total-retries", retry)
+					// 타겟 그룹 삭제 실패는 전체 삭제를 중단하지 않음
+					break
+				}
+
+				logger.Info("타겟 그룹 삭제 성공",
+					"target-group-id", tgID,
+					"retry", retry)
+				deleted = true
+				break
 			}
 
-			_, err := client.V2Api.DeleteTargetGroups(&tgReq)
-			if err != nil {
-				logger.Error(err, "타겟 그룹 삭제 실패", "target-group-id", tgID)
-				// 타겟 그룹 삭제 실패는 전체 삭제를 중단하지 않음
-				continue
+			if !deleted {
+				logger.Info("타겟 그룹 삭제 실패로 수동 정리 필요",
+					"target-group-id", tgID,
+					"reason", "네이버 클라우드 콘솔에서 수동으로 삭제하세요")
 			}
-
-			logger.Info("타겟 그룹 삭제 성공", "target-group-id", tgID)
 		}
+
+		logger.Info("타겟 그룹 삭제 프로세스 완료", "target-group-count", len(targetGroupIDs))
 	}
 
 	return nil
@@ -934,18 +994,33 @@ func removeString(slice []string, s string) []string {
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *ServiceReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	// LoadBalancer 타입의 서비스만 감시하는 필터 추가
-	isLoadBalancerService := predicate.NewPredicateFuncs(func(object client.Object) bool {
+	// LoadBalancer 타입이거나 이전에 LoadBalancer였던 서비스를 감시하는 필터
+	isRelevantService := predicate.NewPredicateFuncs(func(object client.Object) bool {
 		service, ok := object.(*corev1.Service)
 		if !ok {
 			return false
 		}
-		return service.Spec.Type == corev1.ServiceTypeLoadBalancer
+
+		// 현재 LoadBalancer 타입인 경우
+		if service.Spec.Type == corev1.ServiceTypeLoadBalancer {
+			return true
+		}
+
+		// LoadBalancer 타입이 아니지만 이전에 LoadBalancer였던 경우 (어노테이션 확인)
+		if service.Annotations != nil {
+			_, lbExists := service.Annotations["naver.k-paas.org/lb-id"]
+			_, tgExists := service.Annotations["naver.k-paas.org/target-groups"]
+			if lbExists || tgExists {
+				return true
+			}
+		}
+
+		return false
 	})
 
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&corev1.Service{}).
-		WithEventFilter(isLoadBalancerService).
+		WithEventFilter(isRelevantService).
 		Named("service").
 		Complete(r)
 }
@@ -1698,4 +1773,199 @@ func (r *ServiceReconciler) verifyTargetRegistration(ctx context.Context, client
 	}
 
 	return successfulTargets, failedTargets, nil
+}
+
+// createListenersSequentially는 리스너를 순차적으로 생성합니다
+// LoadBalancer 상태 변경에 대한 충분한 대기 시간을 포함합니다
+func (r *ServiceReconciler) createListenersSequentially(ctx context.Context, client *vloadbalancer.APIClient, lbID string, ports []corev1.ServicePort, targetGroupIDs []string, existingListeners map[int32]bool, logger logr.Logger) error {
+	logger.Info("리스너 순차 생성 시작", "totalPorts", len(ports), "targetGroupCount", len(targetGroupIDs))
+
+	successfulListeners := 0
+	failedListeners := 0
+
+	for i, port := range ports {
+		if i >= len(targetGroupIDs) {
+			logger.Info("타겟 그룹 부족으로 리스너 생성 건너뜀", "port", port.Port, "index", i)
+			continue
+		}
+
+		// 이미 해당 포트의 리스너가 있는지 확인
+		if existingListeners[port.Port] {
+			logger.Info("기존 리스너 재사용", "port", port.Port)
+			successfulListeners++
+			continue
+		}
+
+		// LoadBalancer 상태 확인 (Running 상태에서만 리스너 생성 가능)
+		if !r.waitForLoadBalancerReadyForListener(ctx, client, lbID, logger) {
+			logger.Error(nil, "LoadBalancer가 준비되지 않아 리스너 생성 중단", "port", port.Port)
+			failedListeners++
+			continue
+		}
+
+		// 리스너 프로토콜 설정
+		protocolType := "TCP"
+		if port.Protocol == "UDP" {
+			protocolType = "UDP"
+		}
+
+		logger.Info("리스너 생성 시도",
+			"port", port.Port,
+			"protocol", protocolType,
+			"targetGroupID", targetGroupIDs[i],
+			"attempt", i+1,
+			"totalPorts", len(ports))
+
+		// 리스너 생성 요청
+		listenerReq := vloadbalancer.CreateLoadBalancerListenerRequest{
+			RegionCode:             ncloud.String(r.NaverCloudConfig.Region),
+			LoadBalancerInstanceNo: &lbID,
+			ProtocolTypeCode:       ncloud.String(protocolType),
+			Port:                   ncloud.Int32(int32(port.Port)),
+			TargetGroupNo:          &targetGroupIDs[i],
+		}
+
+		// 리스너 생성 재시도 로직 (최대 3회)
+		var listenerErr error
+		listenerCreated := false
+
+		for retryAttempt := 1; retryAttempt <= 3; retryAttempt++ {
+			_, listenerErr = client.V2Api.CreateLoadBalancerListener(&listenerReq)
+			if listenerErr == nil {
+				listenerCreated = true
+				break
+			}
+
+			logger.Info("리스너 생성 실패, 재시도 예정",
+				"port", port.Port,
+				"targetGroupID", targetGroupIDs[i],
+				"attempt", i+1,
+				"retryAttempt", retryAttempt,
+				"error", listenerErr.Error())
+
+			// 재시도 전 대기 (점진적 증가)
+			if retryAttempt < 3 {
+				waitTime := time.Duration(10+retryAttempt*5) * time.Second
+				logger.Info("리스너 생성 재시도 대기", "port", port.Port, "waitSeconds", int(waitTime.Seconds()))
+				time.Sleep(waitTime)
+			}
+		}
+
+		if !listenerCreated {
+			logger.Error(listenerErr, "리스너 생성 최종 실패",
+				"port", port.Port,
+				"targetGroupID", targetGroupIDs[i],
+				"attempt", i+1,
+				"totalRetries", 3)
+			failedListeners++
+
+			// 실패한 경우에도 다음 리스너를 위해 대기
+			time.Sleep(10 * time.Second)
+			continue
+		}
+
+		logger.Info("리스너 생성 성공",
+			"port", port.Port,
+			"targetGroupID", targetGroupIDs[i],
+			"attempt", i+1)
+		successfulListeners++
+
+		// 각 리스너 생성 후 LoadBalancer가 안정화될 때까지 대기
+		// 마지막 리스너가 아닐 경우에만 대기
+		if i < len(ports)-1 {
+			logger.Info("다음 리스너 생성을 위해 LoadBalancer 안정화 대기", "port", port.Port, "waitSeconds", 15)
+			time.Sleep(15 * time.Second) // 고정 대기 시간으로 변경
+
+			logger.Info("LoadBalancer 준비 상태 확인", "port", port.Port)
+			if !r.waitForLoadBalancerReadyForListener(ctx, client, lbID, logger) {
+				logger.Info("LoadBalancer 준비 대기 완료되지 않았지만 다음 리스너 생성 계속 시도", "currentPort", port.Port)
+			} else {
+				logger.Info("LoadBalancer 준비 완료, 다음 리스너 생성 계속", "currentPort", port.Port)
+			}
+		}
+	}
+
+	logger.Info("리스너 순차 생성 완료",
+		"successfulListeners", successfulListeners,
+		"failedListeners", failedListeners,
+		"totalPorts", len(ports))
+
+	// 일부 리스너라도 성공했으면 전체적으로는 성공으로 간주
+	if successfulListeners > 0 {
+		return nil
+	}
+
+	return fmt.Errorf("모든 리스너 생성 실패: 성공 %d, 실패 %d", successfulListeners, failedListeners)
+}
+
+// waitForLoadBalancerReadyForListener는 LoadBalancer가 리스너 생성 가능한 상태가 될 때까지 대기합니다
+func (r *ServiceReconciler) waitForLoadBalancerReadyForListener(ctx context.Context, client *vloadbalancer.APIClient, lbID string, logger logr.Logger) bool {
+	maxRetries := 15
+	retryInterval := 5 * time.Second
+
+	for retry := 1; retry <= maxRetries; retry++ {
+		// LoadBalancer 상태 조회
+		lbDetailReq := vloadbalancer.GetLoadBalancerInstanceDetailRequest{
+			RegionCode:             ncloud.String(r.NaverCloudConfig.Region),
+			LoadBalancerInstanceNo: &lbID,
+		}
+
+		lbDetailResp, err := client.V2Api.GetLoadBalancerInstanceDetail(&lbDetailReq)
+		if err != nil {
+			logger.Error(err, "LoadBalancer 상태 조회 실패", "lbID", lbID, "retry", retry)
+			time.Sleep(retryInterval)
+			continue
+		}
+
+		if len(lbDetailResp.LoadBalancerInstanceList) == 0 {
+			logger.Error(nil, "LoadBalancer 인스턴스를 찾을 수 없음", "lbID", lbID, "retry", retry)
+			time.Sleep(retryInterval)
+			continue
+		}
+
+		lb := lbDetailResp.LoadBalancerInstanceList[0]
+		statusCode := "UNKNOWN"
+		statusName := "UNKNOWN"
+
+		if lb.LoadBalancerInstanceStatus != nil && lb.LoadBalancerInstanceStatus.Code != nil {
+			statusCode = *lb.LoadBalancerInstanceStatus.Code
+		}
+		if lb.LoadBalancerInstanceStatus != nil && lb.LoadBalancerInstanceStatus.CodeName != nil {
+			statusName = *lb.LoadBalancerInstanceStatus.CodeName
+		}
+
+		logger.Info("LoadBalancer 상태 확인",
+			"lbID", lbID,
+			"statusCode", statusCode,
+			"statusName", statusName,
+			"retry", retry)
+
+		// 더 유연한 상태 조건: RUN, USED 상태이고 Changing이 아닌 경우 준비됨
+		if (statusCode == "RUN" || statusCode == "USED") && statusName != "Changing" {
+			logger.Info("LoadBalancer 준비 완료", "lbID", lbID, "statusCode", statusCode, "statusName", statusName)
+			return true
+		}
+
+		// 첫 번째 리스너인 경우 더 관대한 조건 적용
+		if retry == 1 && statusCode == "USED" {
+			logger.Info("첫 번째 리스너 생성을 위해 USED 상태에서 진행", "lbID", lbID, "statusName", statusName)
+			return true
+		}
+
+		// 마지막 재시도가 아닌 경우 대기
+		if retry < maxRetries {
+			logger.Info("LoadBalancer 준비 대기",
+				"lbID", lbID,
+				"currentStatus", statusName,
+				"waitSeconds", int(retryInterval.Seconds()),
+				"retry", retry)
+			time.Sleep(retryInterval)
+		}
+	}
+
+	logger.Info("LoadBalancer 준비 상태 대기 시간 초과, 강제 진행",
+		"lbID", lbID,
+		"maxRetries", maxRetries,
+		"reason", "일부 리스너라도 생성하기 위해 진행")
+	return true // 강제로 true 반환하여 리스너 생성 시도
 }

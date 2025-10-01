@@ -1,3 +1,65 @@
 # More info: https://docs.docker.com/engine/reference/builder/#dockerignore-file
-# Ignore build and test binaries.
+
+# Build and test binaries
 bin/
+cover.out
+*.test
+
+# Development and IDE files
+.DS_Store
+.idea/
+.vscode/
+.devcontainer/
+*.swp
+*.swo
+*~
+
+# Git and version control
+.git/
+.gitignore
+.github/
+
+# Documentation and markdown files
+*.md
+docs/
+CLAUDE.md
+README*.md
+debugging-analysis.md
+test-results.md
+
+# Test files and configurations
+test/
+test-*.yaml
+test.yaml
+*-test.yaml
+controller.log
+
+# Development scripts and tools
+scripts/
+hack/
+.kiro/
+
+# Temporary and cache files
+tmp/
+.tmp/
+*.tmp
+*.cache
+
+# Configuration files not needed in runtime
+.golangci.yml
+Makefile
+PROJECT
+
+# Deployment files (not needed in container)
+deploy/
+config/samples/
+config/crd/
+config/rbac/
+config/manager/
+config/prometheus/
+config/certmanager/
+config/webhook/
+config/scorecard/
+
+# Keep only essential config for runtime
+!config/default/

@@ -1,0 +1,64 @@
+# Kustomization for Naver Cloud LoadBalancer Controller
+# 
+# 사용법:
+# kubectl apply -k deploy/
+# 
+# 또는 특정 환경별 오버레이:
+# kubectl apply -k deploy/overlays/production/
+
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+metadata:
+  name: naver-controller
+  annotations:
+    config.kubernetes.io/local-config: "true"
+
+# 네임스페이스 설정
+namespace: k-paas-system
+
+# 공통 레이블
+commonLabels:
+  app: controller-manager
+  app.kubernetes.io/name: naver-controller
+  app.kubernetes.io/version: v1.0.0
+  app.kubernetes.io/managed-by: kustomize
+
+# 리소스 목록
+resources:
+- kebe-controller-complete.yaml
+
+# 이미지 태그 설정
+images:
+- name: registry.k-paas.org/kpaas/naver-controller
+  newTag: v1.0.0
+
+# ConfigMap 생성기 (필요시)
+# configMapGenerator:
+# - name: controller-config
+#   literals:
+#   - LOG_LEVEL=info
+#   - METRICS_PORT=8080
+
+# Secret 생성기 (개발 환경용, 프로덕션에서는 별도 관리)
+# secretGenerator:
+# - name: naver-cloud-credentials
+#   literals:
+#   - NAVER_CLOUD_API_KEY=your_key_here
+#   - NAVER_CLOUD_API_SECRET=your_secret_here
+#   - NAVER_CLOUD_REGION=KR
+#   - NAVER_CLOUD_VPC_NO=your_vpc_no
+#   - NAVER_CLOUD_SUBNET_NO=your_subnet_no
+
+# 패치 (필요시 리소스 수정)
+# patchesStrategicMerge:
+# - patches/increase-resources.yaml
+
+# JSON 패치 (세밀한 수정)
+# patchesJson6902:
+# - target:
+#     group: apps
+#     version: v1
+#     kind: Deployment
+#     name: kebe-controller01-controller-manager
+#   path: patches/add-node-selector.yaml

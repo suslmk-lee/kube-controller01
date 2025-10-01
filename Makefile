@@ -1,5 +1,5 @@
 # Image URL to use all building/pushing image targets
-IMG ?= harbor.133.186.218.188.nip.io/suslmk-repository/kebe-controller01:latest
+IMG ?= registry.k-paas.org/kpaas/naver-controller:v1.0.6
 
 # Get the currently used golang install path (in GOPATH/bin, unless GOBIN is set)
 ifeq (,$(shell go env GOBIN))
