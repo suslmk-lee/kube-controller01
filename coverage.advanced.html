@@ -1,0 +1,2074 @@
+
+<!DOCTYPE html>
+<html>
+	<head>
+		<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+		<title>controller: Go Coverage Report</title>
+		<style>
+			body {
+				background: black;
+				color: rgb(80, 80, 80);
+			}
+			body, pre, #legend span {
+				font-family: Menlo, monospace;
+				font-weight: bold;
+			}
+			#topbar {
+				background: black;
+				position: fixed;
+				top: 0; left: 0; right: 0;
+				height: 42px;
+				border-bottom: 1px solid rgb(80, 80, 80);
+			}
+			#content {
+				margin-top: 50px;
+			}
+			#nav, #legend {
+				float: left;
+				margin-left: 10px;
+			}
+			#legend {
+				margin-top: 12px;
+			}
+			#nav {
+				margin-top: 10px;
+			}
+			#legend span {
+				margin: 0 5px;
+			}
+			.cov0 { color: rgb(192, 0, 0) }
+.cov1 { color: rgb(128, 128, 128) }
+.cov2 { color: rgb(116, 140, 131) }
+.cov3 { color: rgb(104, 152, 134) }
+.cov4 { color: rgb(92, 164, 137) }
+.cov5 { color: rgb(80, 176, 140) }
+.cov6 { color: rgb(68, 188, 143) }
+.cov7 { color: rgb(56, 200, 146) }
+.cov8 { color: rgb(44, 212, 149) }
+.cov9 { color: rgb(32, 224, 152) }
+.cov10 { color: rgb(20, 236, 155) }
+
+		</style>
+	</head>
+	<body>
+		<div id="topbar">
+			<div id="nav">
+				<select id="files">
+				
+				<option value="file0">github.com/suslmk-lee/kube-controller01/internal/controller/service_controller.go (100.0%)</option>
+				
+				</select>
+			</div>
+			<div id="legend">
+				<span>not tracked</span>
+			
+				<span class="cov0">not covered</span>
+				<span class="cov8">covered</span>
+			
+			</div>
+		</div>
+		<div id="content">
+		
+		<pre class="file" id="file0" style="display: none">/*
+Copyright 2025.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+package controller
+
+import (
+        "context"
+        "fmt"
+        "regexp"
+        "strings"
+        "time"
+
+        "github.com/NaverCloudPlatform/ncloud-sdk-go-v2/ncloud"
+        "github.com/NaverCloudPlatform/ncloud-sdk-go-v2/services/vloadbalancer"
+        "github.com/NaverCloudPlatform/ncloud-sdk-go-v2/services/vserver"
+
+        corev1 "k8s.io/api/core/v1"
+        "k8s.io/apimachinery/pkg/api/errors"
+        "k8s.io/apimachinery/pkg/runtime"
+        "k8s.io/apimachinery/pkg/types"
+        ctrl "sigs.k8s.io/controller-runtime"
+        "sigs.k8s.io/controller-runtime/pkg/client"
+
+        "github.com/go-logr/logr"
+        "sigs.k8s.io/controller-runtime/pkg/log"
+        "sigs.k8s.io/controller-runtime/pkg/predicate"
+)
+
+// ServiceReconciler reconciles a Service object
+type ServiceReconciler struct {
+        client.Client
+        Scheme *runtime.Scheme
+        // Naver Cloud API 클라이언트 설정
+        NaverCloudConfig NaverCloudConfig
+        // Naver Cloud 클라이언트 인터페이스 (테스트를 위한 의존성 주입)
+        NaverClient NaverCloudClient
+}
+
+// NaverCloudConfig 구조체는 Naver Cloud API 접근을 위한 설정을 담고 있습니다
+type NaverCloudConfig struct {
+        APIKey    string
+        APISecret string
+        Region    string
+        // VPC 환경을 위한 설정
+        VpcNo    string // VPC 번호
+        SubnetNo string // 서브넷 번호
+}
+
+// LoadBalancerStatus는 Naver Cloud 로드 밸런서의 상태를 추적합니다
+type LoadBalancerStatus struct {
+        ProvisioningStatus string
+        LBID               string // Naver Cloud에서 사용하는 로드밸런서 인스턴스 번호
+        ExternalIP         string // 로드밸런서의 외부 IP 주소
+}
+
+// +kubebuilder:rbac:groups=core,resources=services,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=core,resources=services/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=core,resources=services/finalizers,verbs=update
+// +kubebuilder:rbac:groups=core,resources=events,verbs=create;patch
+
+// Reconcile는 쿠버네티스 조정 루프의 일부로, 클러스터의 현재 상태를 원하는 상태에 가깝게 이동시키는 것을 목표로 합니다.
+// Service 객체가 지정한 상태와 실제 클러스터 상태를 비교하고,
+// 클러스터 상태가 사용자가 지정한 상태를 반영하도록 작업을 수행합니다.
+func (r *ServiceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) <span class="cov8" title="1">{
+        logger := log.FromContext(ctx).WithValues("service", req.NamespacedName)
+
+        // 서비스 객체 가져오기
+        var service corev1.Service
+        if err := r.Get(ctx, req.NamespacedName, &amp;service); err != nil </span><span class="cov8" title="1">{
+                if errors.IsNotFound(err) </span><span class="cov8" title="1">{
+                        // 서비스가 삭제된 경우, 연결된 Naver Cloud LB도 삭제해야 합니다.
+                        // 실제 구현에서는 finalizer를 사용하여 처리합니다.
+                        logger.Info("서비스가 이미 삭제됨")
+                        return ctrl.Result{}, nil
+                }</span>
+                <span class="cov8" title="1">logger.Error(err, "서비스 가져오기 실패")
+                return ctrl.Result{}, err</span>
+        }
+
+        // 서비스가 LoadBalancer 타입인지 확인
+        <span class="cov8" title="1">if service.Spec.Type != corev1.ServiceTypeLoadBalancer </span><span class="cov8" title="1">{
+                // LoadBalancer 타입이 아니지만 이전에 LoadBalancer였던 경우 정리 필요
+                lbID, lbExists := service.Annotations["naver.k-paas.org/lb-id"]
+                targetGroups, targetGroupsExists := service.Annotations["naver.k-paas.org/target-groups"]
+                if (lbExists &amp;&amp; lbID != "") || (targetGroupsExists &amp;&amp; targetGroups != "") </span><span class="cov8" title="1">{
+                        logger.Info("서비스 타입이 변경됨, 기존 LoadBalancer 정리 시작",
+                                "service-type", service.Spec.Type,
+                                "previous-lb-id", lbID,
+                                "target-groups", targetGroups)
+
+                        // 기존 LoadBalancer 삭제
+                        if err := r.deleteNaverCloudLB(ctx, &amp;service); err != nil </span><span class="cov8" title="1">{
+                                logger.Error(err, "기존 LoadBalancer 삭제 실패")
+                                return ctrl.Result{RequeueAfter: 30 * time.Second}, err
+                        }</span>
+
+                        // 최신 서비스 객체 다시 가져오기 (동시성 문제 방지)
+                        var latestService corev1.Service
+                        if err := r.Get(ctx, types.NamespacedName{Namespace: service.Namespace, Name: service.Name}, &amp;latestService); err != nil {
+                                logger.Error(err, "최신 서비스 객체 가져오기 실패")
+                                return ctrl.Result{RequeueAfter: 5 * time.Second}, err
+                        }
+
+                        // LoadBalancer 관련 어노테이션 제거
+                        if latestService.Annotations == nil {
+                                latestService.Annotations = make(map[string]string)
+                        }
+                        delete(latestService.Annotations, "naver.k-paas.org/lb-id")
+                        delete(latestService.Annotations, "naver.k-paas.org/target-groups")
+
+                        // Finalizer 제거
+                        naverLBFinalizer := "naver.k-paas.org/lb-finalizer"
+                        latestService.Finalizers = removeString(latestService.Finalizers, naverLBFinalizer)
+
+                        // 서비스 상태에서 LoadBalancer 정보 제거
+                        latestService.Status.LoadBalancer = corev1.LoadBalancerStatus{}
+
+                        // 변경사항 저장
+                        if err := r.Update(ctx, &amp;latestService); err != nil {
+                                logger.Error(err, "서비스 어노테이션 업데이트 실패")
+                                return ctrl.Result{RequeueAfter: 5 * time.Second}, err
+                        }
+                        if err := r.Status().Update(ctx, &amp;latestService); err != nil {
+                                logger.Error(err, "서비스 상태 업데이트 실패")
+                                return ctrl.Result{RequeueAfter: 5 * time.Second}, err
+                        }
+
+                        logger.Info("기존 LoadBalancer 정리 완료",
+                                "service-type", latestService.Spec.Type,
+                                "removed-lb-id", lbID,
+                                "removed-target-groups", targetGroups)
+                } else<span class="cov8" title="1"> {
+                        logger.Info("LoadBalancer 관련 리소스가 없는 서비스", "service-type", service.Spec.Type)
+                }</span>
+                <span class="cov8" title="1">return ctrl.Result{}, nil</span>
+        }
+
+        // Finalizer 처리
+        <span class="cov8" title="1">naverLBFinalizer := "naver.k-paas.org/lb-finalizer"
+
+        // 서비스가 삭제 중인지 확인
+        if !service.ObjectMeta.DeletionTimestamp.IsZero() </span><span class="cov8" title="1">{
+                // 삭제 중이고 finalizer가 있는 경우
+                if containsString(service.Finalizers, naverLBFinalizer) </span><span class="cov8" title="1">{
+                        // Naver Cloud LB 삭제 로직 실행
+                        if err := r.deleteNaverCloudLB(ctx, &amp;service); err != nil </span>{
+                                logger.Error(err, "Naver Cloud LB 삭제 실패")
+                                return ctrl.Result{RequeueAfter: 30 * time.Second}, err
+                        }
+
+                        // Finalizer 제거
+                        <span class="cov8" title="1">service.Finalizers = removeString(service.Finalizers, naverLBFinalizer)
+                        if err := r.Update(ctx, &amp;service); err != nil </span>{
+                                logger.Error(err, "Finalizer 제거 실패")
+                                return ctrl.Result{}, err
+                        }
+                }
+                <span class="cov8" title="1">return ctrl.Result{}, nil</span>
+        }
+
+        // Finalizer 추가 (아직 없는 경우)
+        <span class="cov8" title="1">if !containsString(service.Finalizers, naverLBFinalizer) </span><span class="cov8" title="1">{
+                service.Finalizers = append(service.Finalizers, naverLBFinalizer)
+                if err := r.Update(ctx, &amp;service); err != nil </span>{
+                        logger.Error(err, "Finalizer 추가 실패")
+                        return ctrl.Result{}, err
+                }
+                // 업데이트 후 즉시 반환하여 재조정을 트리거합니다
+                <span class="cov8" title="1">return ctrl.Result{}, nil</span>
+        }
+
+        // Naver Cloud LB 생성 또는 업데이트 로직
+        <span class="cov8" title="1">lbStatus, err := r.reconcileNaverCloudLB(ctx, &amp;service)
+        if err != nil </span><span class="cov8" title="1">{
+                logger.Error(err, "Naver Cloud LB 조정 실패",
+                        "service-name", service.Name,
+                        "service-namespace", service.Namespace,
+                        "service-type", service.Spec.Type)
+                return ctrl.Result{RequeueAfter: 30 * time.Second}, err
+        }</span>
+
+        // 로드 밸런서가 아직 생성 중인 경우 재시도
+        if lbStatus.ProvisioningStatus == "PENDING" || lbStatus.ProvisioningStatus == "CREATING" {
+                logger.Info("Naver Cloud LB가 아직 프로비저닝 중, 재시도 예정",
+                        "status", lbStatus.ProvisioningStatus,
+                        "lb-id", lbStatus.LBID,
+                        "external-ip", lbStatus.ExternalIP,
+                        "requeue-after", "30s")
+                return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
+        }
+
+        // 로드 밸런서가 오류 상태인 경우
+        if lbStatus.ProvisioningStatus == "ERROR" {
+                logger.Error(nil, "Naver Cloud LB가 오류 상태",
+                        "status", lbStatus.ProvisioningStatus,
+                        "lb-id", lbStatus.LBID)
+                return ctrl.Result{RequeueAfter: 60 * time.Second}, fmt.Errorf("로드밸런서가 오류 상태: %s", lbStatus.ProvisioningStatus)
+        }
+
+        // 서비스 상태 업데이트 (External IP 또는 Hostname 설정)
+        if lbStatus.ExternalIP != "" {
+                // 도메인 이름인지 IP 주소인지 확인
+                var ingress corev1.LoadBalancerIngress
+
+                // IP 주소 형식 확인 (4개의 숫자 그룹으로 구성된 주소)
+                ipPattern := regexp.MustCompile(`^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$`)
+                if ipPattern.MatchString(lbStatus.ExternalIP) {
+                        // IP 주소인 경우
+                        ingress = corev1.LoadBalancerIngress{IP: lbStatus.ExternalIP}
+                } else {
+                        // 도메인 이름인 경우
+                        ingress = corev1.LoadBalancerIngress{Hostname: lbStatus.ExternalIP}
+                }
+
+                // 서비스 상태를 업데이트하기 전에 가장 최신 버전의 서비스 객체를 다시 가져옵니다
+                // 이렇게 하면 동시성 문제를 해결할 수 있습니다
+                var latestService corev1.Service
+                if err := r.Get(ctx, types.NamespacedName{Namespace: service.Namespace, Name: service.Name}, &amp;latestService); err != nil {
+                        logger.Error(err, "최신 서비스 객체 가져오기 실패")
+                        return ctrl.Result{RequeueAfter: 5 * time.Second}, err
+                }
+
+                // 현재 서비스 어노테이션 보존
+                if latestService.Annotations == nil {
+                        latestService.Annotations = make(map[string]string)
+                }
+
+                // 로드밸런서 ID 어노테이션 보존
+                if lbStatus.LBID != "" {
+                        latestService.Annotations["naver.k-paas.org/lb-id"] = lbStatus.LBID
+                }
+
+                // 포트 정보 어노테이션 이전
+                if portInfo, ok := service.Annotations["naver.k-paas.org/ports"]; ok {
+                        latestService.Annotations["naver.k-paas.org/ports"] = portInfo
+                }
+
+                // 기존 설정과 다른 경우에만 업데이트
+                if len(latestService.Status.LoadBalancer.Ingress) == 0 ||
+                        (ingress.IP != "" &amp;&amp; (len(latestService.Status.LoadBalancer.Ingress) == 0 || latestService.Status.LoadBalancer.Ingress[0].IP != ingress.IP)) ||
+                        (ingress.Hostname != "" &amp;&amp; (len(latestService.Status.LoadBalancer.Ingress) == 0 || latestService.Status.LoadBalancer.Ingress[0].Hostname != ingress.Hostname)) {
+
+                        latestService.Status.LoadBalancer.Ingress = []corev1.LoadBalancerIngress{ingress}
+
+                        // 업데이트 전 로깅
+                        logger.Info("서비스 상태 업데이트 시도", "ingress-type", func() string {
+                                if ingress.IP != "" {
+                                        return "IP: " + ingress.IP
+                                }
+                                return "Hostname: " + ingress.Hostname
+                        }())
+
+                        // 상태 업데이트
+                        if err := r.Status().Update(ctx, &amp;latestService); err != nil {
+                                logger.Error(err, "서비스 상태 업데이트 실패")
+                                return ctrl.Result{RequeueAfter: 5 * time.Second}, err
+                        }
+
+                        // 성공 로그
+                        logger.Info("서비스 상태 업데이트 성공")
+                } else {
+                        logger.Info("서비스 상태 업데이트 필요 없음", "current-ingress", latestService.Status.LoadBalancer.Ingress)
+                }
+        }
+
+        return ctrl.Result{}, nil
+}
+
+// reconcileNaverCloudLB는 Naver Cloud 로드 밸런서를 생성하거나 업데이트합니다
+func (r *ServiceReconciler) reconcileNaverCloudLB(ctx context.Context, service *corev1.Service) (LoadBalancerStatus, error) <span class="cov8" title="1">{
+        logger := log.FromContext(ctx).WithValues("service", types.NamespacedName{Namespace: service.Namespace, Name: service.Name})
+        logger.Info("Naver Cloud LB 조정 시작")
+
+        // Naver Cloud API 접근을 위한 인증 정보 설정
+        apiKeys := &amp;ncloud.APIKey{
+                AccessKey: r.NaverCloudConfig.APIKey,
+                SecretKey: r.NaverCloudConfig.APISecret,
+        }
+
+        // Naver Cloud VLoadBalancer API 클라이언트 생성
+        config := vloadbalancer.NewConfiguration(apiKeys)
+        // 공공망 엔드포인트 설정
+        config.BasePath = "https://ncloud.apigw.gov-ntruss.com/vloadbalancer/v2"
+        client := vloadbalancer.NewAPIClient(config)
+
+        // 타겟 그룹 ID 및 로드밸런서 ID가 서비스 어노테이션에 있는지 확인
+        targetGroupsStr, targetGroupsExist := service.Annotations["naver.k-paas.org/target-groups"]
+        lbID, lbExists := service.Annotations["naver.k-paas.org/lb-id"]
+
+        // 이미 생성된 타겟 그룹 ID 배열 생성
+        targetGroupIDs := []string{}
+        if targetGroupsExist &amp;&amp; targetGroupsStr != "" </span>{
+                targetGroupIDs = strings.Split(targetGroupsStr, ",")
+        }
+
+        // 서비스에서 포트 정보 가져오기
+        <span class="cov8" title="1">var ports []int32
+        var protocols []string
+        for _, port := range service.Spec.Ports </span><span class="cov8" title="1">{
+                ports = append(ports, port.Port)
+
+                // 프로토콜 설정 (TCP, UDP)
+                proto := string(port.Protocol)
+                if proto == "" </span>{
+                        proto = "TCP" // 기본값으로 TCP 사용
+                }
+                <span class="cov8" title="1">protocols = append(protocols, proto)</span>
+        }
+
+        <span class="cov8" title="1">if !lbExists </span><span class="cov8" title="1">{
+                // 새 로드 밸런서 생성 (이름 길이 제한 고려)
+                lbName := r.generateValidName("k8s-lb", service.Namespace, service.Name, "")
+
+                // 1. 각 포트마다 타겟 그룹 먼저 생성
+                targetGroupIDs = []string{}
+                for i, port := range service.Spec.Ports </span><span class="cov8" title="1">{
+                        tgName := r.generateValidName("tg", service.Namespace, service.Name, fmt.Sprintf("%d", i))
+                        logger.Info("타겟 그룹 이름 생성", "original-parts", fmt.Sprintf("tg-%s-%s-%d", service.Namespace, service.Name, i), "generated-name", tgName)
+
+                        // 프로토콜 설정
+                        protocolType := string(port.Protocol)
+                        if protocolType == "" </span>{
+                                protocolType = "TCP"
+                        }
+
+                        // 타겟 그룹 생성 요청 - SDK의 정확한 필드명 사용
+                        <span class="cov8" title="1">tgReq := vloadbalancer.CreateTargetGroupRequest{
+                                RegionCode:                  ncloud.String(r.NaverCloudConfig.Region),
+                                VpcNo:                       ncloud.String(r.NaverCloudConfig.VpcNo),
+                                TargetGroupName:             ncloud.String(tgName),
+                                TargetTypeCode:              ncloud.String("VSVR"), // 가상 서버 타입
+                                TargetGroupPort:             ncloud.Int32(port.NodePort),
+                                TargetGroupProtocolTypeCode: ncloud.String("PROXY_TCP"),
+                                TargetGroupDescription:      ncloud.String(fmt.Sprintf("Target group for %s/%s port %d", service.Namespace, service.Name, port.Port)),
+                                HealthCheckProtocolTypeCode: ncloud.String(protocolType),
+                                HealthCheckPort:             ncloud.Int32(port.NodePort),
+                        }
+
+                        // 타겟 그룹 생성 API 호출
+                        tgResp, err := client.V2Api.CreateTargetGroup(&amp;tgReq)
+                        var targetGroupID string
+
+                        if err != nil </span><span class="cov8" title="1">{
+                                logger.Info("타겟 그룹 생성 API 에러 발생, 실제 생성 여부 확인 중", "port", port.Port, "error", err)
+
+                                // 에러가 발생해도 실제로는 생성되었을 수 있으므로 조회해봄
+                                // 타겟 그룹 이름으로 조회 시도
+                                listReq := vloadbalancer.GetTargetGroupListRequest{
+                                        RegionCode: ncloud.String(r.NaverCloudConfig.Region),
+                                        VpcNo:      ncloud.String(r.NaverCloudConfig.VpcNo),
+                                }
+
+                                listResp, listErr := client.V2Api.GetTargetGroupList(&amp;listReq)
+                                if listErr == nil &amp;&amp; listResp != nil </span>{
+                                        // 생성하려던 이름과 일치하는 타겟 그룹 찾기
+                                        for _, tg := range listResp.TargetGroupList {
+                                                if tg.TargetGroupName != nil &amp;&amp; *tg.TargetGroupName == tgName {
+                                                        targetGroupID = *tg.TargetGroupNo
+                                                        logger.Info("기존 타겟 그룹 발견됨", "targetGroupID", targetGroupID, "name", tgName)
+                                                        break
+                                                }
+                                        }
+                                }
+
+                                // 여전히 타겟 그룹을 찾을 수 없으면 에러 반환
+                                <span class="cov8" title="1">if targetGroupID == "" </span><span class="cov8" title="1">{
+                                        logger.Error(err, "타겟 그룹 생성 및 조회 모두 실패", "port", port.Port)
+                                        return LoadBalancerStatus{}, fmt.Errorf("타겟 그룹 생성 실패: %w", err)
+                                }</span>
+                        } else {
+                                // 정상 응답 처리
+                                if tgResp == nil || len(tgResp.TargetGroupList) == 0 {
+                                        logger.Error(nil, "타겟 그룹 응답이 올바르지 않음")
+                                        return LoadBalancerStatus{}, fmt.Errorf("타겟 그룹 생성 응답이 올바르지 않음")
+                                }
+                                targetGroupID = *tgResp.TargetGroupList[0].TargetGroupNo
+                        }
+
+                        // 타겟 그룹 ID 저장
+                        targetGroupIDs = append(targetGroupIDs, targetGroupID)
+
+                        // 상태 업데이트 전에 가장 최신 버전의 서비스 객체를 다시 가져옵니다
+                        var tempService corev1.Service
+                        if err := r.Get(ctx, types.NamespacedName{Namespace: service.Namespace, Name: service.Name}, &amp;tempService); err != nil {
+                                logger.Error(err, "최신 서비스 객체 가져오기 실패")
+                        } else {
+                                // 타겟 그룹 ID를 어노테이션에 저장
+                                if tempService.Annotations == nil {
+                                        tempService.Annotations = make(map[string]string)
+                                }
+
+                                // 기존 타겟 그룹 정보가 있는지 확인
+                                existingGroups := []string{}
+                                if tgStr, ok := tempService.Annotations["naver.k-paas.org/target-groups"]; ok &amp;&amp; tgStr != "" {
+                                        existingGroups = strings.Split(tgStr, ",")
+                                }
+
+                                // 이미 있는지 확인
+                                alreadyExists := false
+                                for _, existingID := range existingGroups {
+                                        if existingID == targetGroupID {
+                                                alreadyExists = true
+                                                break
+                                        }
+                                }
+
+                                // 없으면 추가
+                                if !alreadyExists {
+                                        existingGroups = append(existingGroups, targetGroupID)
+                                        tempService.Annotations["naver.k-paas.org/target-groups"] = strings.Join(existingGroups, ",")
+
+                                        // 어노테이션 업데이트
+                                        if err := r.Update(ctx, &amp;tempService); err != nil {
+                                                logger.Error(err, "타겟 그룹 어노테이션 업데이트 실패")
+                                        }
+                                }
+                        }
+
+                        logger.Info("타겟 그룹 생성 성공", "targetGroupID", targetGroupID, "port", port.Port)
+
+                        // NetworkProxy 타입에서도 타겟 추가가 필요할 수 있음 - 다시 시도
+                        if err := r.addNodesToTargetGroup(ctx, client, targetGroupID, port.NodePort); err != nil {
+                                logger.Error(err, "타겟 그룹에 노드 추가 실패", "targetGroupID", targetGroupID)
+                                // 노드 추가 실패는 전체 프로세스를 중단하지 않지만 경고 로그 출력
+                        } else {
+                                logger.Info("타겟 그룹에 노드 추가 성공", "targetGroupID", targetGroupID)
+                        }
+                }
+
+                // 로드밸런서 생성 요청 구성 (디버깅용 로그 추가)
+                logger.Info("로드밸런서 생성 요청 구성",
+                        "VpcNo", r.NaverCloudConfig.VpcNo,
+                        "SubnetNo", r.NaverCloudConfig.SubnetNo,
+                        "Region", r.NaverCloudConfig.Region)
+
+                req := vloadbalancer.CreateLoadBalancerInstanceRequest{
+                        RegionCode:              ncloud.String(r.NaverCloudConfig.Region),
+                        LoadBalancerName:        ncloud.String(lbName),
+                        LoadBalancerDescription: ncloud.String(fmt.Sprintf("Auto-created by K-PaaS controller for service %s/%s", service.Namespace, service.Name)),
+                        VpcNo:                   ncloud.String(r.NaverCloudConfig.VpcNo),
+                        LoadBalancerTypeCode:    ncloud.String("NETWORK_PROXY"),                        // 네트워크 프록시 로드밸런서 사용
+                        SubnetNoList:            []*string{ncloud.String(r.NaverCloudConfig.SubnetNo)}, // 서브넷 정보 추가
+                }
+
+                // Naver Cloud API를 호출하여 로드밸런서 생성
+                resp, err := client.V2Api.CreateLoadBalancerInstance(&amp;req)
+                if err != nil {
+                        // 중복 이름 오류인 경우 기존 로드밸런서 찾기
+                        if strings.Contains(err.Error(), "1200013") || strings.Contains(err.Error(), "Duplicate load balancer name") {
+                                logger.Info("중복 로드밸런서 이름 오류, 기존 로드밸런서 검색", "lb-name", lbName)
+
+                                // 기존 로드밸런서 조회
+                                listReq := vloadbalancer.GetLoadBalancerInstanceListRequest{
+                                        RegionCode: ncloud.String(r.NaverCloudConfig.Region),
+                                        VpcNo:      ncloud.String(r.NaverCloudConfig.VpcNo),
+                                }
+
+                                listResp, listErr := client.V2Api.GetLoadBalancerInstanceList(&amp;listReq)
+                                if listErr == nil &amp;&amp; listResp != nil {
+                                        // 같은 이름의 로드밸런서 찾기
+                                        for _, lb := range listResp.LoadBalancerInstanceList {
+                                                if lb.LoadBalancerName != nil &amp;&amp; *lb.LoadBalancerName == lbName {
+                                                        lbID = *lb.LoadBalancerInstanceNo
+                                                        logger.Info("기존 로드밸런서 발견됨", "lb-id", lbID, "lb-name", lbName)
+
+                                                        // 기존 로드밸런서를 사용하므로 resp 구조체 생성
+                                                        resp = &amp;vloadbalancer.CreateLoadBalancerInstanceResponse{
+                                                                LoadBalancerInstanceList: []*vloadbalancer.LoadBalancerInstance{lb},
+                                                        }
+                                                        err = nil // 에러 클리어
+                                                        break
+                                                }
+                                        }
+                                }
+
+                                // 여전히 찾을 수 없으면 원래 에러 반환
+                                if err != nil {
+                                        return LoadBalancerStatus{}, fmt.Errorf("로드밸런서 생성 실패: %w", err)
+                                }
+                        } else {
+                                return LoadBalancerStatus{}, fmt.Errorf("로드밸런서 생성 실패: %w", err)
+                        }
+                }
+
+                // 응답 확인
+                if resp == nil || len(resp.LoadBalancerInstanceList) == 0 {
+                        return LoadBalancerStatus{}, fmt.Errorf("로드밸런서 생성 응답이 올바르지 않음")
+                }
+
+                // 생성된 로드밸런서 정보 가져오기
+                lbInstance := resp.LoadBalancerInstanceList[0]
+                lbID = *lbInstance.LoadBalancerInstanceNo
+
+                // 로드밸런서가 준비될 때까지 대기 (상태가 Running이 될 때까지)
+                if err := r.waitForLoadBalancerReady(ctx, client, lbID, 10); err != nil {
+                        logger.Info("로드밸런서 준비 대기 실패, 리스너 생성 계속 시도", "error", err.Error())
+                        // 계속 진행하되 리스너 생성은 나중에 재시도
+                } else {
+                        logger.Info("로드밸런서 준비 완료, 리스너 생성 시작")
+                }
+
+                // 2. 로드밸런서 생성 후 리스너 추가
+                logger.Info("리스너 생성 시작", "targetGroupCount", len(targetGroupIDs), "portCount", len(service.Spec.Ports))
+
+                // 기존 리스너 조회
+                existingListeners := make(map[int32]bool) // 포트별 기존 리스너 맵
+                listenerListReq := vloadbalancer.GetLoadBalancerListenerListRequest{
+                        RegionCode:             ncloud.String(r.NaverCloudConfig.Region),
+                        LoadBalancerInstanceNo: &amp;lbID,
+                }
+
+                listenerListResp, listErr := client.V2Api.GetLoadBalancerListenerList(&amp;listenerListReq)
+                if listErr == nil &amp;&amp; listenerListResp != nil {
+                        for _, listener := range listenerListResp.LoadBalancerListenerList {
+                                if listener.Port != nil {
+                                        existingListeners[*listener.Port] = true
+                                        logger.Info("기존 리스너 발견", "port", *listener.Port)
+                                }
+                        }
+                } else {
+                        logger.Info("기존 리스너 조회 실패 또는 없음", "error", listErr)
+                }
+
+                if len(targetGroupIDs) &gt; 0 {
+                        // 순차적 리스너 생성 (안정성을 위해 각 리스너 생성 후 대기)
+                        err = r.createListenersSequentially(ctx, client, lbID, service.Spec.Ports, targetGroupIDs, existingListeners, logger)
+                        if err != nil {
+                                logger.Error(err, "리스너 순차 생성 실패")
+                                // 일부 리스너 실패해도 LoadBalancer 자체는 사용 가능하므로 계속 진행
+                        }
+                }
+
+                // 서비스 어노테이션 설정
+                if service.Annotations == nil {
+                        service.Annotations = make(map[string]string)
+                }
+
+                // 로드밸런서 ID 저장
+                service.Annotations["naver.k-paas.org/lb-id"] = lbID
+
+                // 타겟 그룹 ID 저장
+                if len(targetGroupIDs) &gt; 0 {
+                        service.Annotations["naver.k-paas.org/target-groups"] = strings.Join(targetGroupIDs, ",")
+                }
+
+                // 로그에 로드밸런서 생성 정보 출력
+                logger.Info("네이버 클라우드 NetworkProxy LB 생성 완료",
+                        "lb-id", lbID,
+                        "lb-name", lbName,
+                        "target-groups", targetGroupIDs)
+
+                // 네트워크 프록시 LB는 리스너 설정을 다르게 해야 합니다
+                // 실제 네트워크 프록시 LB 생성 후 추가 작업이 필요할 수 있음
+                // 이 부분은 네트워크 프록시 LB의 정확한 API 구조에 맞게 추후 구현해야 함
+
+                // 시작하는 로드밸런서를 생성하고 서비스 어노테이션에 정보 추가
+                logger.Info("로드밸런서 생성 완료, 포트 설정 정보 저장", "port-infos", service.Annotations["naver.k-paas.org/ports"])
+
+                // 실제 External IP/Domain 가져오기 (재시도 포함)
+                extIP := ""
+                getIPErr := error(nil)
+
+                // 로드밸런서가 완전히 준비된 후 외부 주소 획득 시도
+                for retry := 0; retry &lt; 5; retry++ {
+                        extIP, getIPErr = r.getLoadBalancerExternalAddress(ctx, client, lbID)
+                        if getIPErr == nil {
+                                break
+                        }
+
+                        logger.Info("외부 주소 획득 재시도", "retry", retry+1, "error", getIPErr.Error())
+                        time.Sleep(time.Duration(10+retry*5) * time.Second)
+                }
+
+                if getIPErr != nil {
+                        logger.Error(getIPErr, "로드밸런서 외부 주소 획득 최종 실패")
+                        // 임시 도메인 생성 (fallback)
+                        extIP = fmt.Sprintf("lb-%s.ncloud.com", lbID)
+                }
+
+                logger.Info("로드밸런서 생성 완료", "lb-id", lbID, "external-address", extIP)
+
+                // 서비스 어노테이션 업데이트 (최신 버전 가져와서 업데이트)
+                if err := r.updateServiceAnnotations(ctx, service, map[string]string{
+                        "naver.k-paas.org/lb-id": lbID,
+                }); err != nil {
+                        return LoadBalancerStatus{}, fmt.Errorf("서비스 어노테이션 업데이트 실패: %w", err)
+                }
+
+                logger.Info("새 Naver Cloud LB 생성됨", "lb-id", lbID, "external-ip", extIP)
+
+                // 로드밸런서 상태 확인
+                provisioningStatus := "ACTIVE"
+                if getIPErr != nil {
+                        // 외부 주소를 가져올 수 없으면 아직 준비 중일 수 있음
+                        logger.Info("외부 주소 획득 실패로 PENDING 상태 설정", "error", getIPErr.Error())
+                        provisioningStatus = "PENDING"
+                } else {
+                        logger.Info("외부 주소 획득 성공, ACTIVE 상태 설정", "external-ip", extIP)
+                }
+
+                return LoadBalancerStatus{
+                        ProvisioningStatus: provisioningStatus,
+                        LBID:               lbID,
+                        ExternalIP:         extIP,
+                }, nil
+        }
+
+        // 기존 로드 밸런서 업데이트 로직
+        logger.Info("기존 Naver Cloud LB 업데이트", "lb-id", lbID)
+
+        // Naver Cloud API 접근을 위한 인증 정보 설정
+        updateApiKeys := &amp;ncloud.APIKey{
+                AccessKey: r.NaverCloudConfig.APIKey,
+                SecretKey: r.NaverCloudConfig.APISecret,
+        }
+
+        // Naver Cloud VLoadBalancer API 클라이언트 생성
+        updateConfig := vloadbalancer.NewConfiguration(updateApiKeys)
+        updateConfig.BasePath = "https://ncloud.apigw.gov-ntruss.com/vloadbalancer/v2"
+        updateClient := vloadbalancer.NewAPIClient(updateConfig)
+
+        // 실제 External IP/Domain 가져오기
+        extIP, err := r.getLoadBalancerExternalAddress(ctx, updateClient, lbID)
+        if err != nil {
+                logger.Error(err, "기존 로드밸런서 외부 주소 획득 실패")
+                return LoadBalancerStatus{}, err
+        }
+
+        return LoadBalancerStatus{
+                ProvisioningStatus: "ACTIVE",
+                LBID:               lbID,
+                ExternalIP:         extIP,
+        }, nil
+}
+
+// getLoadBalancerExternalAddress는 로드밸런서의 외부 접근 주소를 가져옵니다
+func (r *ServiceReconciler) getLoadBalancerExternalAddress(ctx context.Context, client *vloadbalancer.APIClient, lbID string) (string, error) {
+        logger := log.FromContext(ctx)
+
+        // 로드밸런서 상세 정보 조회
+        detailReq := vloadbalancer.GetLoadBalancerInstanceDetailRequest{
+                LoadBalancerInstanceNo: &amp;lbID,
+        }
+
+        detailResp, err := client.V2Api.GetLoadBalancerInstanceDetail(&amp;detailReq)
+        if err != nil {
+                return "", fmt.Errorf("로드밸런서 상세 정보 조회 실패: %w", err)
+        }
+
+        if detailResp == nil || len(detailResp.LoadBalancerInstanceList) == 0 {
+                return "", fmt.Errorf("로드밸런서 정보를 찾을 수 없음: %s", lbID)
+        }
+
+        lbInstance := detailResp.LoadBalancerInstanceList[0]
+
+        // 로드밸런서 상태 상세 로깅
+        if lbInstance.LoadBalancerInstanceStatus != nil {
+                statusCode := *lbInstance.LoadBalancerInstanceStatus.Code
+                logger.Info("로드밸런서 상태 확인",
+                        "lb-id", lbID,
+                        "status-code", statusCode,
+                        "status-name", func() string {
+                                if lbInstance.LoadBalancerInstanceStatusName != nil {
+                                        return *lbInstance.LoadBalancerInstanceStatusName
+                                }
+                                return "unknown"
+                        }())
+
+                if statusCode != "RUN" &amp;&amp; statusCode != "USED" {
+                        return "", fmt.Errorf("로드밸런서가 아직 준비되지 않음, 상태: %s", statusCode)
+                }
+        } else {
+                logger.Info("로드밸런서 상태 정보 없음", "lb-id", lbID)
+        }
+
+        // 로드밸런서 인스턴스 상세 정보 로깅
+        logger.Info("로드밸런서 인스턴스 분석",
+                "lb-id", lbID,
+                "domain", func() string {
+                        if lbInstance.LoadBalancerDomain != nil {
+                                return *lbInstance.LoadBalancerDomain
+                        }
+                        return "nil"
+                }(),
+                "ip-list-count", func() int {
+                        if lbInstance.LoadBalancerIpList != nil {
+                                return len(lbInstance.LoadBalancerIpList)
+                        }
+                        return 0
+                }())
+
+        // 1. LoadBalancerDomain 확인 (도메인 기반 접근)
+        if lbInstance.LoadBalancerDomain != nil &amp;&amp; *lbInstance.LoadBalancerDomain != "" {
+                logger.Info("로드밸런서 Domain 획득", "domain", *lbInstance.LoadBalancerDomain)
+                return *lbInstance.LoadBalancerDomain, nil
+        }
+
+        // 2. LoadBalancerIpList 확인 (IP 리스트)
+        if lbInstance.LoadBalancerIpList != nil &amp;&amp; len(lbInstance.LoadBalancerIpList) &gt; 0 {
+                logger.Info("로드밸런서 IP 리스트 확인", "ip-count", len(lbInstance.LoadBalancerIpList))
+
+                // 모든 IP 로깅
+                for i, ip := range lbInstance.LoadBalancerIpList {
+                        if ip != nil {
+                                logger.Info("로드밸런서 IP", "index", i, "ip", *ip)
+                        }
+                }
+
+                // 첫 번째 IP 사용 (네이버 클라우드에서는 보통 첫 번째가 공인 IP)
+                if lbInstance.LoadBalancerIpList[0] != nil &amp;&amp; *lbInstance.LoadBalancerIpList[0] != "" {
+                        firstIP := *lbInstance.LoadBalancerIpList[0]
+                        logger.Info("로드밸런서 IP 획득", "ip", firstIP)
+                        return firstIP, nil
+                }
+        } else {
+                logger.Info("로드밸런서 IP 리스트가 비어있음")
+        }
+
+        // 4. 네트워크 프록시 로드밸런서의 경우 별도 필드 확인
+        // (네이버 클라우드 API 문서에 따라 추가 필드가 있을 수 있음)
+
+        // 모든 방법이 실패한 경우 기본 도메인 생성
+        defaultDomain := fmt.Sprintf("lb-%s.ncloud.com", lbID)
+        logger.Info("외부 주소를 찾을 수 없어 기본 도메인 사용", "default-domain", defaultDomain)
+
+        return defaultDomain, nil
+}
+
+// waitForLoadBalancerReady는 로드밸런서가 준비될 때까지 대기합니다
+func (r *ServiceReconciler) waitForLoadBalancerReady(ctx context.Context, client *vloadbalancer.APIClient, lbID string, maxRetries int) error {
+        logger := log.FromContext(ctx)
+
+        for i := 0; i &lt; maxRetries; i++ {
+                detailReq := vloadbalancer.GetLoadBalancerInstanceDetailRequest{
+                        LoadBalancerInstanceNo: &amp;lbID,
+                }
+
+                detailResp, err := client.V2Api.GetLoadBalancerInstanceDetail(&amp;detailReq)
+                if err != nil {
+                        logger.Error(err, "로드밸런서 상태 확인 실패", "retry", i+1)
+                        time.Sleep(15 * time.Second)
+                        continue
+                }
+
+                if detailResp != nil &amp;&amp; len(detailResp.LoadBalancerInstanceList) &gt; 0 {
+                        lbInstance := detailResp.LoadBalancerInstanceList[0]
+                        if lbInstance.LoadBalancerInstanceStatus != nil {
+                                statusCode := *lbInstance.LoadBalancerInstanceStatus.Code
+                                statusName := "unknown"
+                                if lbInstance.LoadBalancerInstanceStatusName != nil {
+                                        statusName = *lbInstance.LoadBalancerInstanceStatusName
+                                }
+
+                                logger.Info("로드밸런서 상태 확인",
+                                        "status-code", statusCode,
+                                        "status-name", statusName,
+                                        "retry", i+1,
+                                        "max-retries", maxRetries)
+
+                                // 로드밸런서가 완전히 준비된 상태인지 확인
+                                if (statusCode == "RUN" || statusCode == "USED") &amp;&amp; statusName == "Running" {
+                                        logger.Info("로드밸런서 준비 완료", "status-code", statusCode, "status-name", statusName)
+                                        return nil
+                                }
+
+                                // 아직 변경 중인 경우
+                                if statusCode == "USED" &amp;&amp; statusName == "Changing" {
+                                        logger.Info("로드밸런서 변경 중, 대기 필요", "status-code", statusCode, "status-name", statusName)
+                                }
+
+                                if statusCode == "ERROR" || statusCode == "TERMINATING" {
+                                        return fmt.Errorf("로드밸런서가 오류 상태: %s (%s)", statusCode, statusName)
+                                }
+                        } else {
+                                logger.Info("로드밸런서 상태 정보 없음", "retry", i+1)
+                        }
+                } else {
+                        logger.Info("로드밸런서 응답 정보 없음", "retry", i+1)
+                }
+
+                // 대기 시간을 점진적으로 증가
+                waitTime := time.Duration(10+i*5) * time.Second
+                logger.Info("로드밸런서 준비 대기", "wait-seconds", waitTime.Seconds())
+                time.Sleep(waitTime)
+        }
+
+        return fmt.Errorf("로드밸런서 준비 대기 시간 초과 (최대 %d회 시도)", maxRetries)
+}
+
+// deleteNaverCloudLB는 Naver Cloud 로드 밸런서를 삭제합니다
+func (r *ServiceReconciler) deleteNaverCloudLB(ctx context.Context, service *corev1.Service) error <span class="cov8" title="1">{
+        logger := log.FromContext(ctx).WithValues("service", types.NamespacedName{Namespace: service.Namespace, Name: service.Name})
+
+        // 로드 밸런서 ID가 서비스 어노테이션에 있는지 확인
+        lbID, lbExists := service.Annotations["naver.k-paas.org/lb-id"]
+        targetGroupsStr, tgExists := service.Annotations["naver.k-paas.org/target-groups"]
+
+        if !lbExists &amp;&amp; !tgExists </span><span class="cov8" title="1">{
+                // 삭제할 리소스가 없으면 이미 삭제되었거나 생성된 적이 없는 것으로 간주
+                logger.Info("삭제할 Naver Cloud 리소스를 찾을 수 없음")
+                return nil
+        }</span>
+
+        // Naver Cloud API 접근을 위한 인증 정보 설정
+        <span class="cov8" title="1">apiKeys := &amp;ncloud.APIKey{
+                AccessKey: r.NaverCloudConfig.APIKey,
+                SecretKey: r.NaverCloudConfig.APISecret,
+        }
+
+        // Naver Cloud VLoadBalancer API 클라이언트 생성
+        config := vloadbalancer.NewConfiguration(apiKeys)
+        config.BasePath = "https://ncloud.apigw.gov-ntruss.com/vloadbalancer/v2"
+        client := vloadbalancer.NewAPIClient(config)
+
+        // 1. 로드밸런서 삭제 (리스너도 함께 삭제됨)
+        if lbExists &amp;&amp; lbID != "" </span><span class="cov8" title="1">{
+                req := vloadbalancer.DeleteLoadBalancerInstancesRequest{
+                        RegionCode:                 ncloud.String(r.NaverCloudConfig.Region),
+                        LoadBalancerInstanceNoList: []*string{ncloud.String(lbID)},
+                }
+
+                _, err := client.V2Api.DeleteLoadBalancerInstances(&amp;req)
+                if err != nil </span><span class="cov8" title="1">{
+                        logger.Error(err, "Naver Cloud LB 삭제 실패")
+                        return fmt.Errorf("로드밸런서 삭제 실패: %w", err)
+                }</span>
+
+                logger.Info("Naver Cloud LB 삭제 성공", "lb-id", lbID)
+
+                // 로드밸런서 삭제 후 리스너가 완전히 정리될 때까지 대기
+                logger.Info("로드밸런서 삭제 후 리스너 정리 대기", "lb-id", lbID, "wait-seconds", 30)
+                time.Sleep(30 * time.Second)
+        }
+
+        // 2. 타겟 그룹 삭제 (재시도 로직 포함)
+        <span class="cov8" title="1">if tgExists &amp;&amp; targetGroupsStr != "" </span><span class="cov8" title="1">{
+                targetGroupIDs := strings.Split(targetGroupsStr, ",")
+                logger.Info("타겟 그룹 삭제 시작", "target-group-count", len(targetGroupIDs))
+
+                for _, tgID := range targetGroupIDs </span><span class="cov8" title="1">{
+                        if tgID == "" </span><span class="cov8" title="1">{
+                                continue</span>
+                        }
+
+                        // 타겟 그룹 삭제 재시도 (최대 5회)
+                        <span class="cov8" title="1">deleted := false
+                        for retry := 1; retry &lt;= 5; retry++ </span><span class="cov8" title="1">{
+                                tgReq := vloadbalancer.DeleteTargetGroupsRequest{
+                                        RegionCode:        ncloud.String(r.NaverCloudConfig.Region),
+                                        TargetGroupNoList: []*string{ncloud.String(tgID)},
+                                }
+
+                                _, err := client.V2Api.DeleteTargetGroups(&amp;tgReq)
+                                if err != nil </span><span class="cov8" title="1">{
+                                        if strings.Contains(err.Error(), "1200059") || strings.Contains(err.Error(), "Target group in use") </span>{
+                                                logger.Info("타겟 그룹이 아직 사용 중, 재시도 예정",
+                                                        "target-group-id", tgID,
+                                                        "retry", retry,
+                                                        "max-retries", 5,
+                                                        "wait-seconds", 10)
+
+                                                if retry &lt; 5 {
+                                                        time.Sleep(10 * time.Second)
+                                                        continue
+                                                }
+                                        }
+
+                                        <span class="cov8" title="1">logger.Error(err, "타겟 그룹 삭제 최종 실패",
+                                                "target-group-id", tgID,
+                                                "total-retries", retry)
+                                        // 타겟 그룹 삭제 실패는 전체 삭제를 중단하지 않음
+                                        break</span>
+                                }
+
+                                logger.Info("타겟 그룹 삭제 성공",
+                                        "target-group-id", tgID,
+                                        "retry", retry)
+                                deleted = true
+                                break
+                        }
+
+                        <span class="cov8" title="1">if !deleted </span><span class="cov8" title="1">{
+                                logger.Info("타겟 그룹 삭제 실패로 수동 정리 필요",
+                                        "target-group-id", tgID,
+                                        "reason", "네이버 클라우드 콘솔에서 수동으로 삭제하세요")
+                        }</span>
+                }
+
+                <span class="cov8" title="1">logger.Info("타겟 그룹 삭제 프로세스 완료", "target-group-count", len(targetGroupIDs))</span>
+        }
+
+        <span class="cov8" title="1">return nil</span>
+}
+
+// generateValidName은 네이버 클라우드 리소스 이름 규칙에 맞는 유효한 이름을 생성합니다
+func (r *ServiceReconciler) generateValidName(prefix, namespace, serviceName, suffix string) string <span class="cov8" title="1">{
+        // 네이버 클라우드 타겟 그룹 이름 규칙 (더 보수적 접근):
+        // - 영문자로 시작
+        // - 영문자, 숫자, 하이픈(-) 사용 가능
+        // - 3-30자 길이
+        // - 하이픈으로 끝날 수 없음
+        // - 소문자 사용
+
+        // 기본 이름 구성: prefix-namespace-serviceName-suffix
+        var parts []string
+        if prefix != "" </span><span class="cov8" title="1">{
+                parts = append(parts, prefix)
+        }</span>
+        <span class="cov8" title="1">if namespace != "" &amp;&amp; namespace != "default" </span><span class="cov8" title="1">{
+                parts = append(parts, namespace)
+        }</span>
+        <span class="cov8" title="1">if serviceName != "" </span><span class="cov8" title="1">{
+                parts = append(parts, serviceName)
+        }</span>
+        <span class="cov8" title="1">if suffix != "" </span><span class="cov8" title="1">{
+                parts = append(parts, suffix)
+        }</span>
+
+        // 하이픈으로 연결
+        <span class="cov8" title="1">name := strings.Join(parts, "-")
+
+        // 소문자로 변환
+        name = strings.ToLower(name)
+
+        // 특수 문자 제거 (영문자, 숫자, 하이픈만 허용)
+        reg := regexp.MustCompile(`[^a-z0-9-]`)
+        name = reg.ReplaceAllString(name, "")
+
+        // 연속된 하이픈 제거
+        for strings.Contains(name, "--") </span><span class="cov8" title="1">{
+                name = strings.ReplaceAll(name, "--", "-")
+        }</span>
+
+        // 하이픈으로 시작하거나 끝나는 경우 제거
+        <span class="cov8" title="1">name = strings.Trim(name, "-")
+
+        // 영문자로 시작하지 않는 경우 "tg" 접두사 추가
+        if len(name) == 0 || !regexp.MustCompile(`^[a-z]`).MatchString(name) </span><span class="cov8" title="1">{
+                name = "tg-" + name
+        }</span>
+
+        // 길이가 30자를 초과하는 경우 잘라내기
+        <span class="cov8" title="1">if len(name) &gt; 30 </span><span class="cov8" title="1">{
+                name = name[:30]
+        }</span>
+
+        // 하이픈으로 끝나는 경우 제거
+        <span class="cov8" title="1">name = strings.TrimSuffix(name, "-")
+
+        // 최소 길이 3자 보장
+        if len(name) &lt; 3 </span><span class="cov8" title="1">{
+                name = "tg-" + name
+                if len(name) &lt; 3 </span>{
+                        name = "tg-default"
+                }
+        }
+
+        <span class="cov8" title="1">return name</span>
+}
+
+// 문자열 배열에 특정 문자열이 포함되어 있는지 확인하는 헬퍼 함수
+func containsString(slice []string, s string) bool <span class="cov8" title="1">{
+        for _, item := range slice </span><span class="cov8" title="1">{
+                if item == s </span><span class="cov8" title="1">{
+                        return true
+                }</span>
+        }
+        <span class="cov8" title="1">return false</span>
+}
+
+// 문자열 배열에서 특정 문자열을 제거하는 헬퍼 함수
+func removeString(slice []string, s string) []string <span class="cov8" title="1">{
+        result := make([]string, 0, len(slice))
+        for _, item := range slice </span><span class="cov8" title="1">{
+                if item != s </span><span class="cov8" title="1">{
+                        result = append(result, item)
+                }</span>
+        }
+        <span class="cov8" title="1">return result</span>
+}
+
+// SetupWithManager sets up the controller with the Manager.
+func (r *ServiceReconciler) SetupWithManager(mgr ctrl.Manager) error {
+        // LoadBalancer 타입이거나 이전에 LoadBalancer였던 서비스를 감시하는 필터
+        isRelevantService := predicate.NewPredicateFuncs(func(object client.Object) bool {
+                service, ok := object.(*corev1.Service)
+                if !ok {
+                        return false
+                }
+
+                // 현재 LoadBalancer 타입인 경우
+                if service.Spec.Type == corev1.ServiceTypeLoadBalancer {
+                        return true
+                }
+
+                // LoadBalancer 타입이 아니지만 이전에 LoadBalancer였던 경우 (어노테이션 확인)
+                if service.Annotations != nil {
+                        _, lbExists := service.Annotations["naver.k-paas.org/lb-id"]
+                        _, tgExists := service.Annotations["naver.k-paas.org/target-groups"]
+                        if lbExists || tgExists {
+                                return true
+                        }
+                }
+
+                return false
+        })
+
+        return ctrl.NewControllerManagedBy(mgr).
+                For(&amp;corev1.Service{}).
+                WithEventFilter(isRelevantService).
+                Named("service").
+                Complete(r)
+}
+
+// updateServiceAnnotations는 Service 어노테이션을 안전하게 업데이트합니다
+func (r *ServiceReconciler) updateServiceAnnotations(ctx context.Context, service *corev1.Service, annotations map[string]string) error <span class="cov8" title="1">{
+        logger := log.FromContext(ctx)
+
+        // 최신 Service 객체를 가져옵니다
+        latest := &amp;corev1.Service{}
+        if err := r.Get(ctx, types.NamespacedName{
+                Namespace: service.Namespace,
+                Name:      service.Name,
+        }, latest); err != nil </span>{
+                return fmt.Errorf("최신 Service 객체 조회 실패: %w", err)
+        }
+
+        // 어노테이션이 없으면 초기화
+        <span class="cov8" title="1">if latest.Annotations == nil </span><span class="cov8" title="1">{
+                latest.Annotations = make(map[string]string)
+        }</span>
+
+        // 어노테이션 업데이트
+        <span class="cov8" title="1">updated := false
+        for key, value := range annotations </span><span class="cov8" title="1">{
+                if latest.Annotations[key] != value </span><span class="cov8" title="1">{
+                        latest.Annotations[key] = value
+                        updated = true
+                }</span>
+        }
+
+        // 변경사항이 있을 때만 업데이트
+        <span class="cov8" title="1">if updated </span><span class="cov8" title="1">{
+                logger.Info("Service 어노테이션 업데이트", "annotations", annotations)
+                if err := r.Update(ctx, latest); err != nil </span>{
+                        return fmt.Errorf("Service 어노테이션 업데이트 실패: %w", err)
+                }
+        }
+
+        <span class="cov8" title="1">return nil</span>
+}
+
+// addNodesToTargetGroup은 Kubernetes 워커 노드들을 타겟 그룹에 추가합니다
+func (r *ServiceReconciler) addNodesToTargetGroup(ctx context.Context, client *vloadbalancer.APIClient, targetGroupID string, nodePort int32) error {
+        logger := log.FromContext(ctx)
+
+        // Kubernetes 노드 목록 조회
+        var nodeList corev1.NodeList
+        if err := r.List(ctx, &amp;nodeList); err != nil {
+                return fmt.Errorf("노드 목록 조회 실패: %w", err)
+        }
+
+        if len(nodeList.Items) == 0 {
+                logger.Info("등록할 워커 노드가 없음")
+                return nil
+        }
+
+        // 타겟으로 추가할 노드들 준비
+        var targets []string
+
+        for _, node := range nodeList.Items {
+                // 마스터 노드 제외 (taint 또는 label로 식별)
+                if r.isMasterNode(&amp;node) {
+                        logger.Info("마스터 노드 제외", "node", node.Name)
+                        continue
+                }
+
+                // 노드의 내부 IP 가져오기
+                nodeIP := r.getNodeInternalIP(&amp;node)
+                if nodeIP == "" {
+                        logger.Info("노드 IP를 찾을 수 없음", "node", node.Name)
+                        continue
+                }
+
+                // 네이버 클라우드 서버 인스턴스 번호 필요
+                // 1. 먼저 노드 메타데이터에서 찾기 시도
+                instanceNo := r.getNaverCloudInstanceNo(&amp;node)
+
+                // 2. 찾을 수 없으면 API를 통해 IP로 찾기 시도
+                if instanceNo == "" {
+                        logger.Info("노드 메타데이터에서 인스턴스 번호를 찾을 수 없음, API로 검색 시도", "node", node.Name, "ip", nodeIP)
+
+                        apiInstanceNo, err := r.getNaverCloudInstanceNoByIP(ctx, nodeIP)
+                        if err != nil {
+                                logger.Error(err, "API를 통한 인스턴스 번호 찾기 실패", "node", node.Name, "ip", nodeIP)
+                                continue
+                        }
+                        instanceNo = apiInstanceNo
+                }
+
+                targets = append(targets, instanceNo)
+
+                logger.Info("타겟 추가 준비", "node", node.Name, "ip", nodeIP, "instance", instanceNo, "port", nodePort)
+        }
+
+        if len(targets) == 0 {
+                return fmt.Errorf("등록할 유효한 타겟이 없음")
+        }
+
+        // 재시도 메커니즘을 통한 타겟 추가
+        return r.addTargetsWithRetry(ctx, client, targetGroupID, targets, nodePort)
+}
+
+// isMasterNode는 노드가 마스터 노드인지 확인합니다
+func (r *ServiceReconciler) isMasterNode(node *corev1.Node) bool <span class="cov8" title="1">{
+        // 마스터 노드 식별 방법:
+        // 1. node-role.kubernetes.io/master 또는 node-role.kubernetes.io/control-plane 레이블
+        // 2. NoSchedule taint 확인
+
+        if _, exists := node.Labels["node-role.kubernetes.io/master"]; exists </span><span class="cov8" title="1">{
+                return true
+        }</span>
+
+        <span class="cov8" title="1">if _, exists := node.Labels["node-role.kubernetes.io/control-plane"]; exists </span><span class="cov8" title="1">{
+                return true
+        }</span>
+
+        // Taint 확인
+        <span class="cov8" title="1">for _, taint := range node.Spec.Taints </span><span class="cov8" title="1">{
+                if taint.Key == "node-role.kubernetes.io/master" ||
+                        taint.Key == "node-role.kubernetes.io/control-plane" </span><span class="cov8" title="1">{
+                        return true
+                }</span>
+        }
+
+        <span class="cov8" title="1">return false</span>
+}
+
+// getNodeInternalIP는 노드의 내부 IP를 반환합니다
+func (r *ServiceReconciler) getNodeInternalIP(node *corev1.Node) string <span class="cov8" title="1">{
+        for _, addr := range node.Status.Addresses </span><span class="cov8" title="1">{
+                if addr.Type == corev1.NodeInternalIP </span><span class="cov8" title="1">{
+                        return addr.Address
+                }</span>
+        }
+        <span class="cov8" title="1">return ""</span>
+}
+
+// getNaverCloudInstanceNo는 노드에서 네이버 클라우드 인스턴스 번호를 추출합니다
+func (r *ServiceReconciler) getNaverCloudInstanceNo(node *corev1.Node) string {
+        // 네이버 클라우드의 경우 providerID 형식: ncloud:///zone/instance-id
+        if node.Spec.ProviderID != "" {
+                parts := strings.Split(node.Spec.ProviderID, "/")
+                if len(parts) &gt; 0 {
+                        return parts[len(parts)-1]
+                }
+        }
+
+        // annotation에서 인스턴스 ID 확인
+        if instanceID, exists := node.Annotations["naver.cloud/instance-id"]; exists {
+                return instanceID
+        }
+
+        // 노드명이 인스턴스 번호인 경우도 있음
+        if regexp.MustCompile(`^\d+$`).MatchString(node.Name) {
+                return node.Name
+        }
+
+        return ""
+}
+
+// getNaverCloudInstanceNoByIP는 내부 IP를 통해 네이버 클라우드 인스턴스 번호를 찾습니다
+// NetworkInterface API를 활용하여 정확한 IP-인스턴스 매칭을 수행합니다
+func (r *ServiceReconciler) getNaverCloudInstanceNoByIP(ctx context.Context, nodeIP string) (string, error) {
+        logger := log.FromContext(ctx)
+
+        logger.Info("NetworkInterface API를 통한 인스턴스 검색 시작", "nodeIP", nodeIP)
+
+        // Naver Cloud API 접근을 위한 인증 정보 설정
+        apiKeys := &amp;ncloud.APIKey{
+                AccessKey: r.NaverCloudConfig.APIKey,
+                SecretKey: r.NaverCloudConfig.APISecret,
+        }
+
+        // 1. VServer API 클라이언트 생성 (NetworkInterface 조회용)
+        vserverConfig := vserver.NewConfiguration(apiKeys)
+        vserverConfig.BasePath = "https://ncloud.apigw.gov-ntruss.com/vserver/v2"
+        vserverClient := vserver.NewAPIClient(vserverConfig)
+
+        // 2. NetworkInterface 목록 조회 (VPC 환경의 모든 NetworkInterface)
+        niListReq := vserver.GetNetworkInterfaceListRequest{
+                RegionCode: ncloud.String(r.NaverCloudConfig.Region),
+        }
+
+        niListResp, err := vserverClient.V2Api.GetNetworkInterfaceList(&amp;niListReq)
+        if err != nil {
+                logger.Error(err, "NetworkInterface 목록 조회 실패")
+                // NetworkInterface API 실패 시 fallback으로 VServer API 사용
+                return r.getInstanceNoByServerListFallback(ctx, nodeIP)
+        }
+
+        if niListResp == nil || len(niListResp.NetworkInterfaceList) == 0 {
+                logger.Info("NetworkInterface 목록이 비어있음, fallback 사용")
+                return r.getInstanceNoByServerListFallback(ctx, nodeIP)
+        }
+
+        // 3. NetworkInterface에서 IP 매칭하여 인스턴스 번호 찾기
+        for _, ni := range niListResp.NetworkInterfaceList {
+                if ni == nil {
+                        continue
+                }
+
+                // NetworkInterface의 IP 주소 확인
+                var niIP string
+                if ni.Ip != nil {
+                        niIP = *ni.Ip
+                }
+
+                if niIP == nodeIP {
+                        // IP가 일치하는 NetworkInterface 발견
+                        var instanceNo string
+                        if ni.InstanceNo != nil {
+                                instanceNo = *ni.InstanceNo
+                        }
+
+                        if instanceNo != "" {
+                                logger.Info("NetworkInterface API로 인스턴스 번호 찾음",
+                                        "nodeIP", nodeIP,
+                                        "instanceNo", instanceNo,
+                                        "networkInterfaceNo", func() string {
+                                                if ni.NetworkInterfaceNo != nil {
+                                                        return *ni.NetworkInterfaceNo
+                                                }
+                                                return "unknown"
+                                        }(),
+                                        "networkInterfaceName", func() string {
+                                                if ni.NetworkInterfaceName != nil {
+                                                        return *ni.NetworkInterfaceName
+                                                }
+                                                return "unknown"
+                                        }())
+                                return instanceNo, nil
+                        }
+                }
+
+                // 디버깅을 위한 NetworkInterface 정보 로깅
+                logger.Info("NetworkInterface 정보",
+                        "networkInterfaceNo", func() string {
+                                if ni.NetworkInterfaceNo != nil {
+                                        return *ni.NetworkInterfaceNo
+                                }
+                                return "nil"
+                        }(),
+                        "ip", niIP,
+                        "instanceNo", func() string {
+                                if ni.InstanceNo != nil {
+                                        return *ni.InstanceNo
+                                }
+                                return "nil"
+                        }(),
+                        "status", func() string {
+                                if ni.NetworkInterfaceStatus != nil &amp;&amp; ni.NetworkInterfaceStatus.Code != nil {
+                                        return *ni.NetworkInterfaceStatus.Code
+                                }
+                                return "unknown"
+                        }())
+        }
+
+        logger.Info("NetworkInterface API에서 일치하는 IP를 찾지 못함, fallback 사용", "nodeIP", nodeIP)
+        return r.getInstanceNoByServerListFallback(ctx, nodeIP)
+}
+
+// getInstanceNoByServerListFallback은 NetworkInterface API 실패 시 VServer API를 사용하는 fallback 함수입니다
+func (r *ServiceReconciler) getInstanceNoByServerListFallback(ctx context.Context, nodeIP string) (string, error) {
+        logger := log.FromContext(ctx)
+
+        logger.Info("VServer API fallback 사용", "nodeIP", nodeIP)
+
+        // Naver Cloud API 접근을 위한 인증 정보 설정
+        apiKeys := &amp;ncloud.APIKey{
+                AccessKey: r.NaverCloudConfig.APIKey,
+                SecretKey: r.NaverCloudConfig.APISecret,
+        }
+
+        // VServer API 클라이언트 생성
+        config := vserver.NewConfiguration(apiKeys)
+        config.BasePath = "https://ncloud.apigw.gov-ntruss.com/vserver/v2"
+        client := vserver.NewAPIClient(config)
+
+        // 서버 인스턴스 목록 조회
+        listReq := vserver.GetServerInstanceListRequest{
+                RegionCode: ncloud.String(r.NaverCloudConfig.Region),
+                VpcNo:      ncloud.String(r.NaverCloudConfig.VpcNo),
+        }
+
+        listResp, err := client.V2Api.GetServerInstanceList(&amp;listReq)
+        if err != nil {
+                return "", fmt.Errorf("서버 인스턴스 목록 조회 실패: %w", err)
+        }
+
+        if listResp == nil || len(listResp.ServerInstanceList) == 0 {
+                return "", fmt.Errorf("서버 인스턴스를 찾을 수 없음")
+        }
+
+        // 각 서버 인스턴스에 대해 NetworkInterface 상세 조회 시도
+        for _, server := range listResp.ServerInstanceList {
+                if server.ServerInstanceNo == nil {
+                        continue
+                }
+
+                instanceNo := *server.ServerInstanceNo
+                serverName := "unknown"
+                if server.ServerName != nil {
+                        serverName = *server.ServerName
+                }
+
+                // 해당 인스턴스의 NetworkInterface 상세 조회
+                if found, err := r.checkInstanceNetworkInterface(ctx, instanceNo, nodeIP); err == nil &amp;&amp; found {
+                        logger.Info("VServer fallback으로 인스턴스 번호 찾음",
+                                "nodeIP", nodeIP,
+                                "instanceNo", instanceNo,
+                                "serverName", serverName)
+                        return instanceNo, nil
+                }
+
+                logger.Info("서버 인스턴스 확인",
+                        "serverName", serverName,
+                        "instanceNo", instanceNo,
+                        "nodeIP", nodeIP)
+        }
+
+        return "", fmt.Errorf("IP %s에 해당하는 서버 인스턴스를 찾을 수 없음", nodeIP)
+}
+
+// checkInstanceNetworkInterface는 특정 인스턴스의 NetworkInterface에서 IP를 확인합니다
+func (r *ServiceReconciler) checkInstanceNetworkInterface(ctx context.Context, instanceNo, targetIP string) (bool, error) {
+        logger := log.FromContext(ctx)
+
+        // Naver Cloud API 접근을 위한 인증 정보 설정
+        apiKeys := &amp;ncloud.APIKey{
+                AccessKey: r.NaverCloudConfig.APIKey,
+                SecretKey: r.NaverCloudConfig.APISecret,
+        }
+
+        // VServer API 클라이언트 생성
+        vserverConfig := vserver.NewConfiguration(apiKeys)
+        vserverConfig.BasePath = "https://ncloud.apigw.gov-ntruss.com/vserver/v2"
+        vserverClient := vserver.NewAPIClient(vserverConfig)
+
+        // 특정 인스턴스의 NetworkInterface 조회
+        niListReq := vserver.GetNetworkInterfaceListRequest{
+                RegionCode: ncloud.String(r.NaverCloudConfig.Region),
+                InstanceNo: ncloud.String(instanceNo),
+        }
+
+        niListResp, err := vserverClient.V2Api.GetNetworkInterfaceList(&amp;niListReq)
+        if err != nil {
+                logger.Info("인스턴스별 NetworkInterface 조회 실패", "instanceNo", instanceNo, "error", err.Error())
+                return false, err
+        }
+
+        if niListResp == nil || len(niListResp.NetworkInterfaceList) == 0 {
+                return false, nil
+        }
+
+        // NetworkInterface에서 IP 확인
+        for _, ni := range niListResp.NetworkInterfaceList {
+                if ni == nil {
+                        continue
+                }
+
+                var niIP string
+                if ni.Ip != nil {
+                        niIP = *ni.Ip
+                }
+
+                if niIP == targetIP {
+                        logger.Info("인스턴스별 NetworkInterface에서 IP 매칭 성공",
+                                "instanceNo", instanceNo,
+                                "targetIP", targetIP,
+                                "foundIP", niIP)
+                        return true, nil
+                }
+        }
+
+        return false, nil
+}
+
+// checkTargetGroupStatus는 타겟 그룹의 상태를 확인하고 디버깅 정보를 제공합니다
+func (r *ServiceReconciler) checkTargetGroupStatus(ctx context.Context, client *vloadbalancer.APIClient, targetGroupID string) error {
+        logger := log.FromContext(ctx)
+
+        // 타겟 그룹 상세 정보 조회
+        detailReq := vloadbalancer.GetTargetGroupDetailRequest{
+                RegionCode:    ncloud.String(r.NaverCloudConfig.Region),
+                TargetGroupNo: ncloud.String(targetGroupID),
+        }
+
+        detailResp, err := client.V2Api.GetTargetGroupDetail(&amp;detailReq)
+        if err != nil {
+                return fmt.Errorf("타겟 그룹 상세 정보 조회 실패: %w", err)
+        }
+
+        if detailResp == nil || len(detailResp.TargetGroupList) == 0 {
+                return fmt.Errorf("타겟 그룹 정보를 찾을 수 없음: %s", targetGroupID)
+        }
+
+        targetGroup := detailResp.TargetGroupList[0]
+
+        // 타겟 그룹 기본 정보 로깅
+        logger.Info("타겟 그룹 상태 확인",
+                "targetGroupID", targetGroupID,
+                "targetGroupName", func() string {
+                        if targetGroup.TargetGroupName != nil {
+                                return *targetGroup.TargetGroupName
+                        }
+                        return "unknown"
+                }(),
+                "targetType", func() string {
+                        if targetGroup.TargetType != nil &amp;&amp; targetGroup.TargetType.Code != nil {
+                                return *targetGroup.TargetType.Code
+                        }
+                        return "unknown"
+                }(),
+                "port", func() int32 {
+                        if targetGroup.TargetGroupPort != nil {
+                                return *targetGroup.TargetGroupPort
+                        }
+                        return 0
+                }(),
+                "protocol", func() string {
+                        if targetGroup.TargetGroupProtocolType != nil &amp;&amp; targetGroup.TargetGroupProtocolType.Code != nil {
+                                return *targetGroup.TargetGroupProtocolType.Code
+                        }
+                        return "unknown"
+                }())
+
+        // 헬스체크 설정 정보 로깅
+        logger.Info("타겟 그룹 헬스체크 설정",
+                "targetGroupID", targetGroupID,
+                "healthCheckProtocol", func() string {
+                        if targetGroup.HealthCheckProtocolType != nil &amp;&amp; targetGroup.HealthCheckProtocolType.Code != nil {
+                                return *targetGroup.HealthCheckProtocolType.Code
+                        }
+                        return "unknown"
+                }(),
+                "healthCheckPort", func() int32 {
+                        if targetGroup.HealthCheckPort != nil {
+                                return *targetGroup.HealthCheckPort
+                        }
+                        return 0
+                }(),
+                "healthCheckPath", func() string {
+                        if targetGroup.HealthCheckHttpMethodType != nil &amp;&amp; targetGroup.HealthCheckHttpMethodType.Code != nil {
+                                return *targetGroup.HealthCheckHttpMethodType.Code
+                        }
+                        return "unknown"
+                }())
+
+        // 등록된 타겟 목록 조회
+        targetListReq := vloadbalancer.GetTargetListRequest{
+                RegionCode:    ncloud.String(r.NaverCloudConfig.Region),
+                TargetGroupNo: ncloud.String(targetGroupID),
+        }
+
+        targetListResp, err := client.V2Api.GetTargetList(&amp;targetListReq)
+        if err != nil {
+                logger.Error(err, "타겟 목록 조회 실패", "targetGroupID", targetGroupID)
+                return fmt.Errorf("타겟 목록 조회 실패: %w", err)
+        }
+
+        if targetListResp == nil {
+                logger.Info("타겟 목록 응답이 없음", "targetGroupID", targetGroupID)
+                return nil
+        }
+
+        // 등록된 타겟 수 확인
+        targetCount := len(targetListResp.TargetList)
+        logger.Info("타겟 그룹 등록 상태",
+                "targetGroupID", targetGroupID,
+                "registeredTargetCount", targetCount)
+
+        if targetCount == 0 {
+                logger.Info("타겟 그룹에 등록된 타겟이 없음",
+                        "targetGroupID", targetGroupID,
+                        "reason", "워커 노드 인스턴스 번호를 찾지 못했거나 타겟 등록에 실패했을 가능성",
+                        "level", "WARNING")
+                return fmt.Errorf("타겟 그룹에 등록된 타겟이 없음")
+        }
+
+        // 각 타겟의 상세 상태 확인
+        for i, target := range targetListResp.TargetList {
+                if target == nil {
+                        continue
+                }
+
+                logger.Info("등록된 타겟 상세 정보",
+                        "targetGroupID", targetGroupID,
+                        "targetIndex", i,
+                        "targetNo", func() string {
+                                if target.TargetNo != nil {
+                                        return *target.TargetNo
+                                }
+                                return "unknown"
+                        }(),
+
+                        "healthCheckStatus", func() string {
+                                if target.HealthCheckStatus != nil &amp;&amp; target.HealthCheckStatus.Code != nil {
+                                        return *target.HealthCheckStatus.Code
+                                }
+                                return "unknown"
+                        }(),
+                        "healthCheckStatusName", func() string {
+                                if target.HealthCheckStatus != nil &amp;&amp; target.HealthCheckStatus.CodeName != nil {
+                                        return *target.HealthCheckStatus.CodeName
+                                }
+                                return "unknown"
+                        }())
+
+                // 헬스체크 실패 시 상세 정보 제공
+                if target.HealthCheckStatus != nil &amp;&amp; target.HealthCheckStatus.Code != nil {
+                        healthStatus := *target.HealthCheckStatus.Code
+                        if healthStatus != "HEALTHY" &amp;&amp; healthStatus != "UP" {
+                                logger.Info("타겟 헬스체크 실패",
+                                        "targetGroupID", targetGroupID,
+                                        "targetNo", func() string {
+                                                if target.TargetNo != nil {
+                                                        return *target.TargetNo
+                                                }
+                                                return "unknown"
+                                        }(),
+                                        "healthStatus", healthStatus,
+                                        "level", "WARNING",
+                                        "possibleCause1", "타겟 인스턴스가 실행되지 않음",
+                                        "possibleCause2", "헬스체크 포트가 열려있지 않음",
+                                        "possibleCause3", "방화벽 또는 보안 그룹 설정 문제",
+                                        "possibleCause4", "애플리케이션이 헬스체크 경로에 응답하지 않음")
+                        }
+                }
+        }
+
+        // 요약 정보 제공
+        healthyTargets := 0
+        for _, target := range targetListResp.TargetList {
+                if target != nil &amp;&amp; target.HealthCheckStatus != nil &amp;&amp; target.HealthCheckStatus.Code != nil {
+                        status := *target.HealthCheckStatus.Code
+                        if status == "HEALTHY" || status == "UP" {
+                                healthyTargets++
+                        }
+                }
+        }
+
+        logger.Info("타겟 그룹 상태 요약",
+                "targetGroupID", targetGroupID,
+                "totalTargets", targetCount,
+                "healthyTargets", healthyTargets,
+                "unhealthyTargets", targetCount-healthyTargets,
+                "status", func() string {
+                        if healthyTargets == 0 {
+                                return "CRITICAL - 모든 타겟이 비정상"
+                        } else if healthyTargets &lt; targetCount {
+                                return "WARNING - 일부 타겟이 비정상"
+                        } else {
+                                return "OK - 모든 타겟이 정상"
+                        }
+                }())
+
+        // 문제 해결 가이드 제공
+        if healthyTargets == 0 {
+                logger.Info("문제 해결 가이드",
+                        "targetGroupID", targetGroupID,
+                        "step1", "워커 노드가 실행 중인지 확인: kubectl get nodes",
+                        "step2", "NodePort 서비스가 정상 동작하는지 확인: kubectl get svc",
+                        "step3", "워커 노드에서 애플리케이션 포트가 열려있는지 확인",
+                        "step4", "네이버 클라우드 콘솔에서 보안 그룹 설정 확인",
+                        "step5", "헬스체크 설정이 올바른지 확인")
+        }
+
+        return nil
+}
+
+// addTargetsWithRetry는 재시도 메커니즘을 통해 타겟을 타겟 그룹에 추가합니다
+func (r *ServiceReconciler) addTargetsWithRetry(ctx context.Context, client *vloadbalancer.APIClient, targetGroupID string, targets []string, nodePort int32) error {
+        logger := log.FromContext(ctx)
+
+        if len(targets) == 0 {
+                logger.Info("추가할 타겟이 없음", "targetGroupID", targetGroupID)
+                return nil
+        }
+
+        logger.Info("재시도 메커니즘을 통한 타겟 추가 시작",
+                "targetGroupID", targetGroupID,
+                "targetCount", len(targets),
+                "maxRetries", 3)
+
+        // 재시도할 타겟 목록 (초기에는 모든 타겟)
+        remainingTargets := make([]string, len(targets))
+        copy(remainingTargets, targets)
+
+        var lastErr error
+
+        // 최대 3회 재시도 (기존 External IP 패턴과 일관성 유지)
+        for retry := 0; retry &lt; 3; retry++ {
+                if len(remainingTargets) == 0 {
+                        logger.Info("모든 타겟이 성공적으로 추가됨", "targetGroupID", targetGroupID)
+                        break
+                }
+
+                logger.Info("타겟 추가 시도",
+                        "targetGroupID", targetGroupID,
+                        "retry", retry+1,
+                        "remainingTargets", len(remainingTargets),
+                        "totalTargets", len(targets))
+
+                // 타겟 추가 요청 구성
+                addReq := vloadbalancer.AddTargetRequest{
+                        RegionCode:    ncloud.String(r.NaverCloudConfig.Region),
+                        TargetGroupNo: ncloud.String(targetGroupID),
+                        TargetNoList:  make([]*string, len(remainingTargets)),
+                }
+
+                // 남은 타겟 목록 설정
+                for i, instanceNo := range remainingTargets {
+                        addReq.TargetNoList[i] = ncloud.String(instanceNo)
+                }
+
+                // 타겟 추가 API 호출
+                _, err := client.V2Api.AddTarget(&amp;addReq)
+                if err != nil {
+                        lastErr = err
+                        logger.Info("타겟 추가 실패, 재시도 예정",
+                                "targetGroupID", targetGroupID,
+                                "retry", retry+1,
+                                "error", err.Error(),
+                                "remainingTargets", len(remainingTargets))
+
+                        // 재시도 간 대기 시간 (기존 패턴과 일관성: 10초 + retry*5초)
+                        if retry &lt; 2 { // 마지막 재시도가 아닌 경우에만 대기
+                                waitTime := time.Duration(10+retry*5) * time.Second
+                                logger.Info("재시도 대기",
+                                        "targetGroupID", targetGroupID,
+                                        "waitSeconds", waitTime.Seconds(),
+                                        "nextRetry", retry+2)
+                                time.Sleep(waitTime)
+                        }
+                        continue
+                }
+
+                // 타겟 추가 성공
+                logger.Info("타겟 추가 성공",
+                        "targetGroupID", targetGroupID,
+                        "retry", retry+1,
+                        "addedTargets", len(remainingTargets))
+
+                // 타겟 추가 후 상태 확인하여 실제로 등록되었는지 검증
+                successfulTargets, failedTargets, err := r.verifyTargetRegistration(ctx, client, targetGroupID, remainingTargets)
+                if err != nil {
+                        logger.Error(err, "타겟 등록 검증 실패", "targetGroupID", targetGroupID)
+                        // 검증 실패 시에도 다음 재시도 진행
+                } else {
+                        logger.Info("타겟 등록 검증 완료",
+                                "targetGroupID", targetGroupID,
+                                "successfulTargets", len(successfulTargets),
+                                "failedTargets", len(failedTargets))
+
+                        // 실패한 타겟만 다음 재시도에서 처리
+                        remainingTargets = failedTargets
+                }
+
+                // 모든 타겟이 성공적으로 등록된 경우
+                if len(remainingTargets) == 0 {
+                        logger.Info("모든 타겟 등록 완료",
+                                "targetGroupID", targetGroupID,
+                                "totalTargets", len(targets),
+                                "finalRetry", retry+1)
+                        break
+                }
+        }
+
+        // 최종 결과 확인
+        if len(remainingTargets) &gt; 0 {
+                logger.Error(lastErr, "타겟 추가 최종 실패",
+                        "targetGroupID", targetGroupID,
+                        "failedTargets", len(remainingTargets),
+                        "totalTargets", len(targets),
+                        "successfulTargets", len(targets)-len(remainingTargets))
+
+                // 부분 성공인 경우 경고로 처리
+                if len(remainingTargets) &lt; len(targets) {
+                        logger.Info("부분 성공 - 일부 타겟만 등록됨",
+                                "targetGroupID", targetGroupID,
+                                "successfulTargets", len(targets)-len(remainingTargets),
+                                "failedTargets", len(remainingTargets),
+                                "level", "WARNING")
+                        // 부분 성공은 에러로 처리하지 않음
+                } else {
+                        // 완전 실패인 경우에만 에러 반환
+                        return fmt.Errorf("모든 타겟 추가 실패 (재시도 3회 완료): %w", lastErr)
+                }
+        }
+
+        // 최종 타겟 그룹 상태 확인
+        if err := r.checkTargetGroupStatus(ctx, client, targetGroupID); err != nil {
+                logger.Error(err, "최종 타겟 그룹 상태 확인 실패", "targetGroupID", targetGroupID)
+                // 상태 확인 실패는 전체 프로세스를 중단하지 않음
+        }
+
+        logger.Info("타겟 추가 프로세스 완료",
+                "targetGroupID", targetGroupID,
+                "totalTargets", len(targets),
+                "finalSuccessfulTargets", len(targets)-len(remainingTargets))
+
+        return nil
+}
+
+// verifyTargetRegistration은 타겟이 실제로 타겟 그룹에 등록되었는지 검증합니다
+func (r *ServiceReconciler) verifyTargetRegistration(ctx context.Context, client *vloadbalancer.APIClient, targetGroupID string, expectedTargets []string) ([]string, []string, error) {
+        logger := log.FromContext(ctx)
+
+        // 타겟 목록 조회
+        targetListReq := vloadbalancer.GetTargetListRequest{
+                RegionCode:    ncloud.String(r.NaverCloudConfig.Region),
+                TargetGroupNo: ncloud.String(targetGroupID),
+        }
+
+        targetListResp, err := client.V2Api.GetTargetList(&amp;targetListReq)
+        if err != nil {
+                return nil, expectedTargets, fmt.Errorf("타겟 목록 조회 실패: %w", err)
+        }
+
+        if targetListResp == nil {
+                return nil, expectedTargets, fmt.Errorf("타겟 목록 응답이 없음")
+        }
+
+        // 등록된 타겟 목록 생성
+        registeredTargets := make(map[string]bool)
+        for _, target := range targetListResp.TargetList {
+                if target != nil &amp;&amp; target.TargetNo != nil {
+                        registeredTargets[*target.TargetNo] = true
+                }
+        }
+
+        // 성공/실패 타겟 분류
+        var successfulTargets []string
+        var failedTargets []string
+
+        for _, expectedTarget := range expectedTargets {
+                if registeredTargets[expectedTarget] {
+                        successfulTargets = append(successfulTargets, expectedTarget)
+                        logger.Info("타겟 등록 확인됨",
+                                "targetGroupID", targetGroupID,
+                                "targetNo", expectedTarget)
+                } else {
+                        failedTargets = append(failedTargets, expectedTarget)
+                        logger.Info("타겟 등록 실패 확인됨",
+                                "targetGroupID", targetGroupID,
+                                "targetNo", expectedTarget,
+                                "level", "WARNING")
+                }
+        }
+
+        return successfulTargets, failedTargets, nil
+}
+
+// createListenersSequentially는 리스너를 순차적으로 생성합니다
+// LoadBalancer 상태 변경에 대한 충분한 대기 시간을 포함합니다
+func (r *ServiceReconciler) createListenersSequentially(ctx context.Context, client *vloadbalancer.APIClient, lbID string, ports []corev1.ServicePort, targetGroupIDs []string, existingListeners map[int32]bool, logger logr.Logger) error {
+        logger.Info("리스너 순차 생성 시작", "totalPorts", len(ports), "targetGroupCount", len(targetGroupIDs))
+
+        successfulListeners := 0
+        failedListeners := 0
+
+        for i, port := range ports {
+                if i &gt;= len(targetGroupIDs) {
+                        logger.Info("타겟 그룹 부족으로 리스너 생성 건너뜀", "port", port.Port, "index", i)
+                        continue
+                }
+
+                // 이미 해당 포트의 리스너가 있는지 확인
+                if existingListeners[port.Port] {
+                        logger.Info("기존 리스너 재사용", "port", port.Port)
+                        successfulListeners++
+                        continue
+                }
+
+                // LoadBalancer 상태 확인 (Running 상태에서만 리스너 생성 가능)
+                if !r.waitForLoadBalancerReadyForListener(ctx, client, lbID, logger) {
+                        logger.Error(nil, "LoadBalancer가 준비되지 않아 리스너 생성 중단", "port", port.Port)
+                        failedListeners++
+                        continue
+                }
+
+                // 리스너 프로토콜 설정
+                protocolType := "TCP"
+                if port.Protocol == "UDP" {
+                        protocolType = "UDP"
+                }
+
+                logger.Info("리스너 생성 시도",
+                        "port", port.Port,
+                        "protocol", protocolType,
+                        "targetGroupID", targetGroupIDs[i],
+                        "attempt", i+1,
+                        "totalPorts", len(ports))
+
+                // 리스너 생성 요청
+                listenerReq := vloadbalancer.CreateLoadBalancerListenerRequest{
+                        RegionCode:             ncloud.String(r.NaverCloudConfig.Region),
+                        LoadBalancerInstanceNo: &amp;lbID,
+                        ProtocolTypeCode:       ncloud.String(protocolType),
+                        Port:                   ncloud.Int32(int32(port.Port)),
+                        TargetGroupNo:          &amp;targetGroupIDs[i],
+                }
+
+                // 리스너 생성 재시도 로직 (최대 3회)
+                var listenerErr error
+                listenerCreated := false
+
+                for retryAttempt := 1; retryAttempt &lt;= 3; retryAttempt++ {
+                        _, listenerErr = client.V2Api.CreateLoadBalancerListener(&amp;listenerReq)
+                        if listenerErr == nil {
+                                listenerCreated = true
+                                break
+                        }
+
+                        logger.Info("리스너 생성 실패, 재시도 예정",
+                                "port", port.Port,
+                                "targetGroupID", targetGroupIDs[i],
+                                "attempt", i+1,
+                                "retryAttempt", retryAttempt,
+                                "error", listenerErr.Error())
+
+                        // 재시도 전 대기 (점진적 증가)
+                        if retryAttempt &lt; 3 {
+                                waitTime := time.Duration(10+retryAttempt*5) * time.Second
+                                logger.Info("리스너 생성 재시도 대기", "port", port.Port, "waitSeconds", int(waitTime.Seconds()))
+                                time.Sleep(waitTime)
+                        }
+                }
+
+                if !listenerCreated {
+                        logger.Error(listenerErr, "리스너 생성 최종 실패",
+                                "port", port.Port,
+                                "targetGroupID", targetGroupIDs[i],
+                                "attempt", i+1,
+                                "totalRetries", 3)
+                        failedListeners++
+
+                        // 실패한 경우에도 다음 리스너를 위해 대기
+                        time.Sleep(10 * time.Second)
+                        continue
+                }
+
+                logger.Info("리스너 생성 성공",
+                        "port", port.Port,
+                        "targetGroupID", targetGroupIDs[i],
+                        "attempt", i+1)
+                successfulListeners++
+
+                // 각 리스너 생성 후 LoadBalancer가 안정화될 때까지 대기
+                // 마지막 리스너가 아닐 경우에만 대기
+                if i &lt; len(ports)-1 {
+                        logger.Info("다음 리스너 생성을 위해 LoadBalancer 안정화 대기", "port", port.Port, "waitSeconds", 15)
+                        time.Sleep(15 * time.Second) // 고정 대기 시간으로 변경
+
+                        logger.Info("LoadBalancer 준비 상태 확인", "port", port.Port)
+                        if !r.waitForLoadBalancerReadyForListener(ctx, client, lbID, logger) {
+                                logger.Info("LoadBalancer 준비 대기 완료되지 않았지만 다음 리스너 생성 계속 시도", "currentPort", port.Port)
+                        } else {
+                                logger.Info("LoadBalancer 준비 완료, 다음 리스너 생성 계속", "currentPort", port.Port)
+                        }
+                }
+        }
+
+        logger.Info("리스너 순차 생성 완료",
+                "successfulListeners", successfulListeners,
+                "failedListeners", failedListeners,
+                "totalPorts", len(ports))
+
+        // 일부 리스너라도 성공했으면 전체적으로는 성공으로 간주
+        if successfulListeners &gt; 0 {
+                return nil
+        }
+
+        return fmt.Errorf("모든 리스너 생성 실패: 성공 %d, 실패 %d", successfulListeners, failedListeners)
+}
+
+// waitForLoadBalancerReadyForListener는 LoadBalancer가 리스너 생성 가능한 상태가 될 때까지 대기합니다
+func (r *ServiceReconciler) waitForLoadBalancerReadyForListener(ctx context.Context, client *vloadbalancer.APIClient, lbID string, logger logr.Logger) bool {
+        maxRetries := 15
+        retryInterval := 5 * time.Second
+
+        for retry := 1; retry &lt;= maxRetries; retry++ {
+                // LoadBalancer 상태 조회
+                lbDetailReq := vloadbalancer.GetLoadBalancerInstanceDetailRequest{
+                        RegionCode:             ncloud.String(r.NaverCloudConfig.Region),
+                        LoadBalancerInstanceNo: &amp;lbID,
+                }
+
+                lbDetailResp, err := client.V2Api.GetLoadBalancerInstanceDetail(&amp;lbDetailReq)
+                if err != nil {
+                        logger.Error(err, "LoadBalancer 상태 조회 실패", "lbID", lbID, "retry", retry)
+                        time.Sleep(retryInterval)
+                        continue
+                }
+
+                if len(lbDetailResp.LoadBalancerInstanceList) == 0 {
+                        logger.Error(nil, "LoadBalancer 인스턴스를 찾을 수 없음", "lbID", lbID, "retry", retry)
+                        time.Sleep(retryInterval)
+                        continue
+                }
+
+                lb := lbDetailResp.LoadBalancerInstanceList[0]
+                statusCode := "UNKNOWN"
+                statusName := "UNKNOWN"
+
+                if lb.LoadBalancerInstanceStatus != nil &amp;&amp; lb.LoadBalancerInstanceStatus.Code != nil {
+                        statusCode = *lb.LoadBalancerInstanceStatus.Code
+                }
+                if lb.LoadBalancerInstanceStatus != nil &amp;&amp; lb.LoadBalancerInstanceStatus.CodeName != nil {
+                        statusName = *lb.LoadBalancerInstanceStatus.CodeName
+                }
+
+                logger.Info("LoadBalancer 상태 확인",
+                        "lbID", lbID,
+                        "statusCode", statusCode,
+                        "statusName", statusName,
+                        "retry", retry)
+
+                // 더 유연한 상태 조건: RUN, USED 상태이고 Changing이 아닌 경우 준비됨
+                if (statusCode == "RUN" || statusCode == "USED") &amp;&amp; statusName != "Changing" {
+                        logger.Info("LoadBalancer 준비 완료", "lbID", lbID, "statusCode", statusCode, "statusName", statusName)
+                        return true
+                }
+
+                // 첫 번째 리스너인 경우 더 관대한 조건 적용
+                if retry == 1 &amp;&amp; statusCode == "USED" {
+                        logger.Info("첫 번째 리스너 생성을 위해 USED 상태에서 진행", "lbID", lbID, "statusName", statusName)
+                        return true
+                }
+
+                // 마지막 재시도가 아닌 경우 대기
+                if retry &lt; maxRetries {
+                        logger.Info("LoadBalancer 준비 대기",
+                                "lbID", lbID,
+                                "currentStatus", statusName,
+                                "waitSeconds", int(retryInterval.Seconds()),
+                                "retry", retry)
+                        time.Sleep(retryInterval)
+                }
+        }
+
+        logger.Info("LoadBalancer 준비 상태 대기 시간 초과, 강제 진행",
+                "lbID", lbID,
+                "maxRetries", maxRetries,
+                "reason", "일부 리스너라도 생성하기 위해 진행")
+        return true // 강제로 true 반환하여 리스너 생성 시도
+}
+</pre>
+		
+		</div>
+	</body>
+	<script>
+	(function() {
+		var files = document.getElementById('files');
+		var visible;
+		files.addEventListener('change', onChange, false);
+		function select(part) {
+			if (visible)
+				visible.style.display = 'none';
+			visible = document.getElementById(part);
+			if (!visible)
+				return;
+			files.value = part;
+			visible.style.display = 'block';
+			location.hash = part;
+		}
+		function onChange() {
+			select(files.value);
+			window.scrollTo(0, 0);
+		}
+		if (location.hash != "") {
+			select(location.hash.substr(1));
+		}
+		if (!visible) {
+			select("file0");
+		}
+	})();
+	</script>
+</html>

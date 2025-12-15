@@ -1,3 +1,7 @@
+//go:build coverage_extra
+// +build coverage_extra
+
+
 /*
 Copyright 2025.
 
