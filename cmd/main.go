@@ -214,10 +214,40 @@ func main() {
 		naverCloudConfig.Region = "KR"
 	}
 
+	// Secret 관리 설정 (OpenBao, ESO, Kubernetes 자동 감지)
+	secretConfig := controller.DefaultSecretConfig()
+
+	// 환경 변수로 Secret 모드 오버라이드 가능
+	if secretMode := os.Getenv("SECRET_MODE"); secretMode != "" {
+		secretConfig.Management.Mode = secretMode
+	}
+
+	// OpenBao 설정 오버라이드
+	if openbaoAddr := os.Getenv("OPENBAO_ADDRESS"); openbaoAddr != "" {
+		secretConfig.Management.OpenBao.Address = openbaoAddr
+	}
+	if openbaoPath := os.Getenv("OPENBAO_PATH"); openbaoPath != "" {
+		secretConfig.Management.OpenBao.Path = openbaoPath
+	}
+	if openbaoRole := os.Getenv("OPENBAO_ROLE"); openbaoRole != "" {
+		secretConfig.Management.OpenBao.Role = openbaoRole
+	}
+	if openbaoAppRoleSecret := os.Getenv("OPENBAO_APPROLE_SECRET"); openbaoAppRoleSecret != "" {
+		secretConfig.Management.OpenBao.AppRoleSecret = openbaoAppRoleSecret
+	}
+
+	// 컨트롤러 네임스페이스 가져오기 (Secret 조회용)
+	controllerNamespace := os.Getenv("CONTROLLER_NAMESPACE")
+	if controllerNamespace == "" {
+		controllerNamespace = "k-paas-system" // 기본값
+	}
+
 	if err = (&controller.ServiceReconciler{
-		Client:           mgr.GetClient(),
-		Scheme:           mgr.GetScheme(),
-		NaverCloudConfig: naverCloudConfig,
+		Client:              mgr.GetClient(),
+		Scheme:              mgr.GetScheme(),
+		NaverCloudConfig:    naverCloudConfig,
+		SecretConfig:        secretConfig,
+		ControllerNamespace: controllerNamespace,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "Service")
 		os.Exit(1)

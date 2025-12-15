@@ -43,10 +43,14 @@ import (
 type ServiceReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
-	// Naver Cloud API 클라이언트 설정
+	// Naver Cloud API 클라이언트 설정 (환경변수 fallback용)
 	NaverCloudConfig NaverCloudConfig
 	// Naver Cloud 클라이언트 인터페이스 (테스트를 위한 의존성 주입)
 	NaverClient NaverCloudClient
+	// Secret 관리 설정 (OpenBao, ESO, Kubernetes)
+	SecretConfig SecretConfig
+	// 컨트롤러 네임스페이스 (Secret 조회용)
+	ControllerNamespace string
 }
 
 // NaverCloudConfig 구조체는 Naver Cloud API 접근을 위한 설정을 담고 있습니다
@@ -284,10 +288,16 @@ func (r *ServiceReconciler) reconcileNaverCloudLB(ctx context.Context, service *
 	logger := log.FromContext(ctx).WithValues("service", types.NamespacedName{Namespace: service.Namespace, Name: service.Name})
 	logger.Info("Naver Cloud LB 조정 시작")
 
+	// SecretProvider를 통해 인증 정보 가져오기
+	credentials, err := r.getCredentials(ctx)
+	if err != nil {
+		return LoadBalancerStatus{}, fmt.Errorf("인증 정보 조회 실패: %w", err)
+	}
+
 	// Naver Cloud API 접근을 위한 인증 정보 설정
 	apiKeys := &ncloud.APIKey{
-		AccessKey: r.NaverCloudConfig.APIKey,
-		SecretKey: r.NaverCloudConfig.APISecret,
+		AccessKey: credentials.APIKey,
+		SecretKey: credentials.APISecret,
 	}
 
 	// Naver Cloud VLoadBalancer API 클라이언트 생성
@@ -338,8 +348,8 @@ func (r *ServiceReconciler) reconcileNaverCloudLB(ctx context.Context, service *
 
 			// 타겟 그룹 생성 요청 - SDK의 정확한 필드명 사용
 			tgReq := vloadbalancer.CreateTargetGroupRequest{
-				RegionCode:                  ncloud.String(r.NaverCloudConfig.Region),
-				VpcNo:                       ncloud.String(r.NaverCloudConfig.VpcNo),
+				RegionCode:                  ncloud.String(credentials.Region),
+				VpcNo:                       ncloud.String(credentials.VpcNo),
 				TargetGroupName:             ncloud.String(tgName),
 				TargetTypeCode:              ncloud.String("VSVR"), // 가상 서버 타입
 				TargetGroupPort:             ncloud.Int32(port.NodePort),
@@ -359,8 +369,8 @@ func (r *ServiceReconciler) reconcileNaverCloudLB(ctx context.Context, service *
 				// 에러가 발생해도 실제로는 생성되었을 수 있으므로 조회해봄
 				// 타겟 그룹 이름으로 조회 시도
 				listReq := vloadbalancer.GetTargetGroupListRequest{
-					RegionCode: ncloud.String(r.NaverCloudConfig.Region),
-					VpcNo:      ncloud.String(r.NaverCloudConfig.VpcNo),
+					RegionCode: ncloud.String(credentials.Region),
+					VpcNo:      ncloud.String(credentials.VpcNo),
 				}
 
 				listResp, listErr := client.V2Api.GetTargetGroupList(&listReq)
@@ -442,17 +452,17 @@ func (r *ServiceReconciler) reconcileNaverCloudLB(ctx context.Context, service *
 
 		// 로드밸런서 생성 요청 구성 (디버깅용 로그 추가)
 		logger.Info("로드밸런서 생성 요청 구성",
-			"VpcNo", r.NaverCloudConfig.VpcNo,
-			"SubnetNo", r.NaverCloudConfig.SubnetNo,
-			"Region", r.NaverCloudConfig.Region)
+			"VpcNo", credentials.VpcNo,
+			"SubnetNo", credentials.SubnetNo,
+			"Region", credentials.Region)
 
 		req := vloadbalancer.CreateLoadBalancerInstanceRequest{
-			RegionCode:              ncloud.String(r.NaverCloudConfig.Region),
+			RegionCode:              ncloud.String(credentials.Region),
 			LoadBalancerName:        ncloud.String(lbName),
 			LoadBalancerDescription: ncloud.String(fmt.Sprintf("Auto-created by K-PaaS controller for service %s/%s", service.Namespace, service.Name)),
-			VpcNo:                   ncloud.String(r.NaverCloudConfig.VpcNo),
-			LoadBalancerTypeCode:    ncloud.String("NETWORK_PROXY"),                        // 네트워크 프록시 로드밸런서 사용
-			SubnetNoList:            []*string{ncloud.String(r.NaverCloudConfig.SubnetNo)}, // 서브넷 정보 추가
+			VpcNo:                   ncloud.String(credentials.VpcNo),
+			LoadBalancerTypeCode:    ncloud.String("NETWORK_PROXY"),                 // 네트워크 프록시 로드밸런서 사용
+			SubnetNoList:            []*string{ncloud.String(credentials.SubnetNo)}, // 서브넷 정보 추가
 		}
 
 		// Naver Cloud API를 호출하여 로드밸런서 생성
@@ -464,8 +474,8 @@ func (r *ServiceReconciler) reconcileNaverCloudLB(ctx context.Context, service *
 
 				// 기존 로드밸런서 조회
 				listReq := vloadbalancer.GetLoadBalancerInstanceListRequest{
-					RegionCode: ncloud.String(r.NaverCloudConfig.Region),
-					VpcNo:      ncloud.String(r.NaverCloudConfig.VpcNo),
+					RegionCode: ncloud.String(credentials.Region),
+					VpcNo:      ncloud.String(credentials.VpcNo),
 				}
 
 				listResp, listErr := client.V2Api.GetLoadBalancerInstanceList(&listReq)
@@ -518,7 +528,7 @@ func (r *ServiceReconciler) reconcileNaverCloudLB(ctx context.Context, service *
 		// 기존 리스너 조회
 		existingListeners := make(map[int32]bool) // 포트별 기존 리스너 맵
 		listenerListReq := vloadbalancer.GetLoadBalancerListenerListRequest{
-			RegionCode:             ncloud.String(r.NaverCloudConfig.Region),
+			RegionCode:             ncloud.String(credentials.Region),
 			LoadBalancerInstanceNo: &lbID,
 		}
 
@@ -621,16 +631,9 @@ func (r *ServiceReconciler) reconcileNaverCloudLB(ctx context.Context, service *
 	// 기존 로드 밸런서 업데이트 로직
 	logger.Info("기존 Naver Cloud LB 업데이트", "lb-id", lbID)
 
-	// Naver Cloud API 접근을 위한 인증 정보 설정
-	updateApiKeys := &ncloud.APIKey{
-		AccessKey: r.NaverCloudConfig.APIKey,
-		SecretKey: r.NaverCloudConfig.APISecret,
-	}
-
-	// Naver Cloud VLoadBalancer API 클라이언트 생성
-	updateConfig := vloadbalancer.NewConfiguration(updateApiKeys)
-	updateConfig.BasePath = "https://ncloud.apigw.gov-ntruss.com/vloadbalancer/v2"
-	updateClient := vloadbalancer.NewAPIClient(updateConfig)
+	// 이미 위에서 credentials를 가져왔으므로 재사용
+	// Naver Cloud VLoadBalancer API 클라이언트 생성 (기존 client 재사용)
+	updateClient := client
 
 	// 실제 External IP/Domain 가져오기
 	extIP, err := r.getLoadBalancerExternalAddress(ctx, updateClient, lbID)
@@ -814,10 +817,16 @@ func (r *ServiceReconciler) deleteNaverCloudLB(ctx context.Context, service *cor
 		return nil
 	}
 
+	// SecretProvider를 통해 인증 정보 가져오기
+	credentials, err := r.getCredentials(ctx)
+	if err != nil {
+		return fmt.Errorf("인증 정보 조회 실패: %w", err)
+	}
+
 	// Naver Cloud API 접근을 위한 인증 정보 설정
 	apiKeys := &ncloud.APIKey{
-		AccessKey: r.NaverCloudConfig.APIKey,
-		SecretKey: r.NaverCloudConfig.APISecret,
+		AccessKey: credentials.APIKey,
+		SecretKey: credentials.APISecret,
 	}
 
 	// Naver Cloud VLoadBalancer API 클라이언트 생성
@@ -828,7 +837,7 @@ func (r *ServiceReconciler) deleteNaverCloudLB(ctx context.Context, service *cor
 	// 1. 로드밸런서 삭제 (리스너도 함께 삭제됨)
 	if lbExists && lbID != "" {
 		req := vloadbalancer.DeleteLoadBalancerInstancesRequest{
-			RegionCode:                 ncloud.String(r.NaverCloudConfig.Region),
+			RegionCode:                 ncloud.String(credentials.Region),
 			LoadBalancerInstanceNoList: []*string{ncloud.String(lbID)},
 		}
 
@@ -859,7 +868,7 @@ func (r *ServiceReconciler) deleteNaverCloudLB(ctx context.Context, service *cor
 			deleted := false
 			for retry := 1; retry <= 5; retry++ {
 				tgReq := vloadbalancer.DeleteTargetGroupsRequest{
-					RegionCode:        ncloud.String(r.NaverCloudConfig.Region),
+					RegionCode:        ncloud.String(credentials.Region),
 					TargetGroupNoList: []*string{ncloud.String(tgID)},
 				}
 
@@ -1189,10 +1198,16 @@ func (r *ServiceReconciler) getNaverCloudInstanceNoByIP(ctx context.Context, nod
 
 	logger.Info("NetworkInterface API를 통한 인스턴스 검색 시작", "nodeIP", nodeIP)
 
+	// SecretProvider를 통해 인증 정보 가져오기
+	credentials, err := r.getCredentials(ctx)
+	if err != nil {
+		return "", fmt.Errorf("인증 정보 조회 실패: %w", err)
+	}
+
 	// Naver Cloud API 접근을 위한 인증 정보 설정
 	apiKeys := &ncloud.APIKey{
-		AccessKey: r.NaverCloudConfig.APIKey,
-		SecretKey: r.NaverCloudConfig.APISecret,
+		AccessKey: credentials.APIKey,
+		SecretKey: credentials.APISecret,
 	}
 
 	// 1. VServer API 클라이언트 생성 (NetworkInterface 조회용)
@@ -1202,7 +1217,7 @@ func (r *ServiceReconciler) getNaverCloudInstanceNoByIP(ctx context.Context, nod
 
 	// 2. NetworkInterface 목록 조회 (VPC 환경의 모든 NetworkInterface)
 	niListReq := vserver.GetNetworkInterfaceListRequest{
-		RegionCode: ncloud.String(r.NaverCloudConfig.Region),
+		RegionCode: ncloud.String(credentials.Region),
 	}
 
 	niListResp, err := vserverClient.V2Api.GetNetworkInterfaceList(&niListReq)
@@ -1289,10 +1304,16 @@ func (r *ServiceReconciler) getInstanceNoByServerListFallback(ctx context.Contex
 
 	logger.Info("VServer API fallback 사용", "nodeIP", nodeIP)
 
+	// SecretProvider를 통해 인증 정보 가져오기
+	credentials, err := r.getCredentials(ctx)
+	if err != nil {
+		return "", fmt.Errorf("인증 정보 조회 실패: %w", err)
+	}
+
 	// Naver Cloud API 접근을 위한 인증 정보 설정
 	apiKeys := &ncloud.APIKey{
-		AccessKey: r.NaverCloudConfig.APIKey,
-		SecretKey: r.NaverCloudConfig.APISecret,
+		AccessKey: credentials.APIKey,
+		SecretKey: credentials.APISecret,
 	}
 
 	// VServer API 클라이언트 생성
@@ -1302,8 +1323,8 @@ func (r *ServiceReconciler) getInstanceNoByServerListFallback(ctx context.Contex
 
 	// 서버 인스턴스 목록 조회
 	listReq := vserver.GetServerInstanceListRequest{
-		RegionCode: ncloud.String(r.NaverCloudConfig.Region),
-		VpcNo:      ncloud.String(r.NaverCloudConfig.VpcNo),
+		RegionCode: ncloud.String(credentials.Region),
+		VpcNo:      ncloud.String(credentials.VpcNo),
 	}
 
 	listResp, err := client.V2Api.GetServerInstanceList(&listReq)
@@ -1349,10 +1370,16 @@ func (r *ServiceReconciler) getInstanceNoByServerListFallback(ctx context.Contex
 func (r *ServiceReconciler) checkInstanceNetworkInterface(ctx context.Context, instanceNo, targetIP string) (bool, error) {
 	logger := log.FromContext(ctx)
 
+	// SecretProvider를 통해 인증 정보 가져오기
+	credentials, err := r.getCredentials(ctx)
+	if err != nil {
+		return false, fmt.Errorf("인증 정보 조회 실패: %w", err)
+	}
+
 	// Naver Cloud API 접근을 위한 인증 정보 설정
 	apiKeys := &ncloud.APIKey{
-		AccessKey: r.NaverCloudConfig.APIKey,
-		SecretKey: r.NaverCloudConfig.APISecret,
+		AccessKey: credentials.APIKey,
+		SecretKey: credentials.APISecret,
 	}
 
 	// VServer API 클라이언트 생성
@@ -1362,7 +1389,7 @@ func (r *ServiceReconciler) checkInstanceNetworkInterface(ctx context.Context, i
 
 	// 특정 인스턴스의 NetworkInterface 조회
 	niListReq := vserver.GetNetworkInterfaceListRequest{
-		RegionCode: ncloud.String(r.NaverCloudConfig.Region),
+		RegionCode: ncloud.String(credentials.Region),
 		InstanceNo: ncloud.String(instanceNo),
 	}
 
@@ -1403,9 +1430,15 @@ func (r *ServiceReconciler) checkInstanceNetworkInterface(ctx context.Context, i
 func (r *ServiceReconciler) checkTargetGroupStatus(ctx context.Context, client *vloadbalancer.APIClient, targetGroupID string) error {
 	logger := log.FromContext(ctx)
 
+	// SecretProvider를 통해 인증 정보 가져오기 (Region만 필요)
+	credentials, err := r.getCredentials(ctx)
+	if err != nil {
+		return fmt.Errorf("인증 정보 조회 실패: %w", err)
+	}
+
 	// 타겟 그룹 상세 정보 조회
 	detailReq := vloadbalancer.GetTargetGroupDetailRequest{
-		RegionCode:    ncloud.String(r.NaverCloudConfig.Region),
+		RegionCode:    ncloud.String(credentials.Region),
 		TargetGroupNo: ncloud.String(targetGroupID),
 	}
 
@@ -1472,7 +1505,7 @@ func (r *ServiceReconciler) checkTargetGroupStatus(ctx context.Context, client *
 
 	// 등록된 타겟 목록 조회
 	targetListReq := vloadbalancer.GetTargetListRequest{
-		RegionCode:    ncloud.String(r.NaverCloudConfig.Region),
+		RegionCode:    ncloud.String(credentials.Region),
 		TargetGroupNo: ncloud.String(targetGroupID),
 	}
 
@@ -1601,6 +1634,12 @@ func (r *ServiceReconciler) addTargetsWithRetry(ctx context.Context, client *vlo
 		return nil
 	}
 
+	// SecretProvider를 통해 인증 정보 가져오기 (Region만 필요)
+	credentials, err := r.getCredentials(ctx)
+	if err != nil {
+		return fmt.Errorf("인증 정보 조회 실패: %w", err)
+	}
+
 	logger.Info("재시도 메커니즘을 통한 타겟 추가 시작",
 		"targetGroupID", targetGroupID,
 		"targetCount", len(targets),
@@ -1627,7 +1666,7 @@ func (r *ServiceReconciler) addTargetsWithRetry(ctx context.Context, client *vlo
 
 		// 타겟 추가 요청 구성
 		addReq := vloadbalancer.AddTargetRequest{
-			RegionCode:    ncloud.String(r.NaverCloudConfig.Region),
+			RegionCode:    ncloud.String(credentials.Region),
 			TargetGroupNo: ncloud.String(targetGroupID),
 			TargetNoList:  make([]*string, len(remainingTargets)),
 		}
@@ -1730,9 +1769,15 @@ func (r *ServiceReconciler) addTargetsWithRetry(ctx context.Context, client *vlo
 func (r *ServiceReconciler) verifyTargetRegistration(ctx context.Context, client *vloadbalancer.APIClient, targetGroupID string, expectedTargets []string) ([]string, []string, error) {
 	logger := log.FromContext(ctx)
 
+	// SecretProvider를 통해 인증 정보 가져오기 (Region만 필요)
+	credentials, err := r.getCredentials(ctx)
+	if err != nil {
+		return nil, expectedTargets, fmt.Errorf("인증 정보 조회 실패: %w", err)
+	}
+
 	// 타겟 목록 조회
 	targetListReq := vloadbalancer.GetTargetListRequest{
-		RegionCode:    ncloud.String(r.NaverCloudConfig.Region),
+		RegionCode:    ncloud.String(credentials.Region),
 		TargetGroupNo: ncloud.String(targetGroupID),
 	}
 
@@ -1780,6 +1825,12 @@ func (r *ServiceReconciler) verifyTargetRegistration(ctx context.Context, client
 func (r *ServiceReconciler) createListenersSequentially(ctx context.Context, client *vloadbalancer.APIClient, lbID string, ports []corev1.ServicePort, targetGroupIDs []string, existingListeners map[int32]bool, logger logr.Logger) error {
 	logger.Info("리스너 순차 생성 시작", "totalPorts", len(ports), "targetGroupCount", len(targetGroupIDs))
 
+	// SecretProvider를 통해 인증 정보 가져오기 (Region만 필요)
+	credentials, err := r.getCredentials(ctx)
+	if err != nil {
+		return fmt.Errorf("인증 정보 조회 실패: %w", err)
+	}
+
 	successfulListeners := 0
 	failedListeners := 0
 
@@ -1818,7 +1869,7 @@ func (r *ServiceReconciler) createListenersSequentially(ctx context.Context, cli
 
 		// 리스너 생성 요청
 		listenerReq := vloadbalancer.CreateLoadBalancerListenerRequest{
-			RegionCode:             ncloud.String(r.NaverCloudConfig.Region),
+			RegionCode:             ncloud.String(credentials.Region),
 			LoadBalancerInstanceNo: &lbID,
 			ProtocolTypeCode:       ncloud.String(protocolType),
 			Port:                   ncloud.Int32(int32(port.Port)),
@@ -1903,10 +1954,17 @@ func (r *ServiceReconciler) waitForLoadBalancerReadyForListener(ctx context.Cont
 	maxRetries := 15
 	retryInterval := 5 * time.Second
 
+	// SecretProvider를 통해 인증 정보 가져오기 (Region만 필요)
+	credentials, err := r.getCredentials(ctx)
+	if err != nil {
+		logger.Error(err, "인증 정보 조회 실패")
+		return false
+	}
+
 	for retry := 1; retry <= maxRetries; retry++ {
 		// LoadBalancer 상태 조회
 		lbDetailReq := vloadbalancer.GetLoadBalancerInstanceDetailRequest{
-			RegionCode:             ncloud.String(r.NaverCloudConfig.Region),
+			RegionCode:             ncloud.String(credentials.Region),
 			LoadBalancerInstanceNo: &lbID,
 		}
 
@@ -1968,4 +2026,26 @@ func (r *ServiceReconciler) waitForLoadBalancerReadyForListener(ctx context.Cont
 		"maxRetries", maxRetries,
 		"reason", "일부 리스너라도 생성하기 위해 진행")
 	return true // 강제로 true 반환하여 리스너 생성 시도
+}
+
+// getCredentials는 SecretProvider를 통해 Naver Cloud 인증 정보를 가져옵니다
+// 우선순위: OpenBao -> ESO -> Kubernetes Secret -> 환경변수 fallback
+func (r *ServiceReconciler) getCredentials(ctx context.Context) (*NaverCloudCredentials, error) {
+	logger := log.FromContext(ctx)
+
+	// 환경변수에 이미 인증 정보가 있으면 사용 (테스트 또는 레거시 모드)
+	if r.NaverCloudConfig.APIKey != "" && r.NaverCloudConfig.APISecret != "" {
+		logger.Info("환경변수에서 인증 정보 사용")
+		return &NaverCloudCredentials{
+			APIKey:    r.NaverCloudConfig.APIKey,
+			APISecret: r.NaverCloudConfig.APISecret,
+			Region:    r.NaverCloudConfig.Region,
+			VpcNo:     r.NaverCloudConfig.VpcNo,
+			SubnetNo:  r.NaverCloudConfig.SubnetNo,
+		}, nil
+	}
+
+	// SecretProvider를 통해 동적으로 인증 정보 가져오기
+	provider := NewAutoSecretProvider(r.Client, r.SecretConfig, r.ControllerNamespace)
+	return provider.GetCredentials(ctx)
 }

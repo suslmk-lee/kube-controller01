@@ -94,31 +94,17 @@ spec:
             memory: 64Mi
         volumeMounts: []
         env:
-        - name: NAVER_CLOUD_API_KEY
+        - name: CONTROLLER_NAMESPACE
           valueFrom:
-            secretKeyRef:
-              name: naver-cloud-credentials
-              key: NAVER_CLOUD_API_KEY
-        - name: NAVER_CLOUD_API_SECRET
-          valueFrom:
-            secretKeyRef:
-              name: naver-cloud-credentials
-              key: NAVER_CLOUD_API_SECRET
-        - name: NAVER_CLOUD_REGION
-          valueFrom:
-            secretKeyRef:
-              name: naver-cloud-credentials
-              key: NAVER_CLOUD_REGION
-        - name: NAVER_CLOUD_VPC_NO
-          valueFrom:
-            secretKeyRef:
-              name: naver-cloud-credentials
-              key: NAVER_CLOUD_VPC_NO
-        - name: NAVER_CLOUD_SUBNET_NO
-          valueFrom:
-            secretKeyRef:
-              name: naver-cloud-credentials
-              key: NAVER_CLOUD_SUBNET_NO
+            fieldRef:
+              fieldPath: metadata.namespace
+        # Secret backend configuration
+        - name: SECRET_MODE
+          value: "auto"  # Enable auto-detection: OpenBao -> ESO -> Kubernetes
+        - name: SECRET_NAME
+          value: "naver-cloud-credentials"  # Kubernetes Secret name for fallback mode
+        - name: OPENBAO_APPROLE_SECRET
+          value: "controller-manager"   # Secret containing VAULT_ROLE_ID and VAULT_ROLE_NAME
       volumes: []
       serviceAccountName: controller-manager
       terminationGracePeriodSeconds: 10
